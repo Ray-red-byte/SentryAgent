@@ -69,7 +69,65 @@ class PythonParser:
                 })
         
         return params
-
+    
+    def find_security_hotspots(self, source_code: bytes):
+        """
+        Scans for dangerous function calls and patterns (SAST Heuristics).
+        Returns a list of 'Hotspots'.
+        """
+        tree = self.parse(source_code)
+        
+        # Heuristic Query: Find dangerous function calls
+        query_scm = """
+        (call
+            function: [
+                (attribute object: (identifier) @mod attribute: (identifier) @func)
+                (identifier) @func
+            ]
+            (#match? @func "^(system|popen|run|call|execute|eval|exec|pickle|loads)$")
+        ) @dangerous_call
+        """
+        
+        query = Query(self.LANGUAGE, query_scm)
+        cursor = QueryCursor(query)
+        matches = cursor.matches(tree.root_node)
+        
+        hotspots = []
+        
+        for match in matches:
+            # --- FIX: Handle Tree-Sitter 0.23+ Breaking Change ---
+            # Old version returns object with .captures
+            # New version returns tuple (match_id, captures_dict)
+            captures = match.captures if hasattr(match, "captures") else match[1]
+            
+            nodes = captures.get("dangerous_call", [])
+            if not nodes:
+                continue
+                
+            node = nodes[0]
+            
+            # Extract the full text of the call
+            code_snippet = self.get_node_text(node, source_code)
+            line_number = node.start_point.row + 1
+            
+            # Classify the risk
+            risk_type = "Generic Risk"
+            if "system" in code_snippet or "subprocess" in code_snippet:
+                risk_type = "Command Injection Risk"
+            elif "execute" in code_snippet:
+                risk_type = "SQL Injection Risk"
+            elif "eval" in code_snippet or "exec" in code_snippet:
+                risk_type = "Code Injection Risk"
+            
+            hotspots.append({
+                "type": risk_type,
+                "line": line_number,
+                "snippet": code_snippet,
+                "severity": "HIGH"
+            })
+            
+        return hotspots
+    
     def find_entry_points(self, source_code: bytes):
         tree = self.parse(source_code)
         
