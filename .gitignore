@@ -1,0 +1,30 @@
+# --- Python & Environment ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+.conda/
+
+# --- macOS System Files ---
+.DS_Store
+
+# --- Project Specific (Databases & Storage) ---
+# Ignore the ChromaDB storage folder so we don't commit 100MB+ vector files
+db_storage/
+chroma_db/
+
+# --- Tree-sitter ---
+# Ignore compiled languages files if they are generated locally
+build/
+dist/
+
+# --- IDE Settings (Optional but recommended) ---
+.vscode/
+.idea/
+
+# --- Environment Variables ---
+.env
