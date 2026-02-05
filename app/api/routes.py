@@ -2,15 +2,26 @@ import os
 import shutil
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, Depends, File, UploadFile
-from pydantic import BaseModel
-from typing import List, Optional
+from sqlalchemy.orm import Session
+from fastapi.responses import FileResponse
 
-# Import Agents & Core
+# --- Import Core & Agents ---
 from app.agent.auditor import SecurityAuditor
 from app.agent.patcher import SecurityPatcher
 from app.parser.python_parser import PythonParser
 from app.agent.translator import SecurityTranslator
 from app.core.workspace import WorkspaceManager
+from app.core.database import get_db
+from app.core.report_generator import ReportGenerator
+
+# --- Import Models (Refactored) ---
+from app.models.audit_log import AuditLog
+from app.models.schemas import (
+    AuditRequest, 
+    ScanRequest, 
+    ExplainRequest, 
+    ExportRequest
+)
 
 # Initialize Managers
 router = APIRouter()
@@ -19,17 +30,6 @@ workspace_manager = WorkspaceManager()
 # --- Authentication Placeholder ---
 async def get_current_user():
     return {"username": "secure_admin", "roles": ["admin"]}
-
-# --- Request Models (Now with session_id) ---
-class AuditRequest(BaseModel):
-    session_id: str
-    file_path: str
-
-class ScanRequest(BaseModel):
-    session_id: str
-
-class ExplainRequest(BaseModel):
-    report: List[dict]
 
 # --- 1. UPLOAD (The Landing Zone) ---
 @router.post("/upload")
@@ -53,11 +53,7 @@ async def scout_codebase(request: ScanRequest):
     Scans the uploaded codebase for that specific session.
     """
     try:
-        # Get the real path for this session (e.g., temp_workspaces/abc-123/app)
         session_path = workspace_manager.get_workspace_path(request.session_id)
-        
-        # We assume the zip contained an "app" folder or similar. 
-        # We scan the whole session folder.
         root_dir = session_path
         
         parser = PythonParser()
@@ -78,9 +74,7 @@ async def scout_codebase(request: ScanRequest):
                 hotspots = parser.find_security_hotspots(code)
                 
                 if routes or hotspots:
-                    # Make path relative to the session root for display
                     rel_path = file_path.relative_to(root_dir)
-                    
                     risk_score = len(routes) + (len(hotspots) * 5)
                     scan_results.append({
                         "file": str(rel_path),
@@ -111,15 +105,12 @@ async def audit_code(request: AuditRequest):
     try:
         session_path = workspace_manager.get_workspace_path(request.session_id)
         
-        # Security: Prevent path traversal out of session
+        # Security: Prevent path traversal
         full_target_path = (session_path / request.file_path).resolve()
         if not str(full_target_path).startswith(str(session_path.resolve())):
              raise HTTPException(status_code=400, detail="Invalid file path.")
 
-        # Initialize Auditor with the SESSION DIRECTORY
         auditor = SecurityAuditor(root_dir=str(session_path))
-        
-        # Pass the relative file path to the auditor
         report = auditor.audit_file(request.file_path)
         return {"file": request.file_path, "report": report}
     except Exception as e:
@@ -141,7 +132,7 @@ async def fix_code(request: AuditRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- 5. EXPLAINER (No File Access Needed) ---
+# --- 5. EXPLAINER ---
 @router.post("/explain", dependencies=[Depends(get_current_user)])
 async def explain_report(request: ExplainRequest):
     try:
@@ -151,6 +142,33 @@ async def explain_report(request: ExplainRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# --- 6. EXPORT ---
+@router.post("/export")
+async def export_report(
+    request: ExportRequest,
+    db: Session = Depends(get_db)
+):
+    try:
+        session_path = workspace_manager.get_workspace_path(request.session_id)
+        
+        # Query Postgres for all audits in this session
+        db_logs = db.query(AuditLog).filter(AuditLog.session_id == request.session_id).all()
+        
+        # Convert List[AuditLog Object] -> Dict { "filename": [vulns] }
+        audits_dict = { log.file_path: log.vuln_report for log in db_logs }
+        
+        # Generate PDF
+        generator = ReportGenerator(session_path)
+        pdf_path = generator.generate_pdf(request.session_id, request.scan_results, audits_dict)
+        
+        return FileResponse(
+            path=pdf_path, 
+            filename=f"sentry_report_{request.session_id}.pdf",
+            media_type='application/pdf'
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.get("/health")
 async def health_check():
-    return {"status": "active", "version": "0.2.0-session-aware"}
+    return {"status": "active", "version": "0.3.0-refactored"}
