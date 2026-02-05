@@ -1,127 +1,156 @@
 import os
+import shutil
 from pathlib import Path
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, File, UploadFile
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 
-# Import Agents
+# Import Agents & Core
 from app.agent.auditor import SecurityAuditor
 from app.agent.patcher import SecurityPatcher
 from app.parser.python_parser import PythonParser
+from app.agent.translator import SecurityTranslator
+from app.core.workspace import WorkspaceManager
 
-# --- Authentication Dependency Placeholder ---
+# Initialize Managers
+router = APIRouter()
+workspace_manager = WorkspaceManager()
+
+# --- Authentication Placeholder ---
 async def get_current_user():
-    # In a real app, you would decode a JWT or check a session here.
     return {"username": "secure_admin", "roles": ["admin"]}
 
-# --- Input Validation Helper ---
-def validate_file_path_within_root(requested_path: str, root_dir_str: str) -> Path:
-    """
-    Prevents Path Traversal (e.g., '../../etc/passwd').
-    Ensures the file is actually inside the 'app' folder.
-    """
-    base_path = Path(root_dir_str).resolve()
-    full_resolved_path = (Path.cwd() / requested_path).resolve()
-
-    if not full_resolved_path.is_file():
-        raise HTTPException(status_code=400, detail=f"File not found: '{requested_path}'")
-
-    # The Logic: Is the full path inside the base path?
-    try:
-        relative_to_root = full_resolved_path.relative_to(base_path)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid path: Path traversal attempt detected.")
-
-    return relative_to_root
-
-router = APIRouter()
-
+# --- Request Models (Now with session_id) ---
 class AuditRequest(BaseModel):
+    session_id: str
     file_path: str
 
-@router.get("/health")
-async def health_check():
-    return {"status": "active", "version": "0.1.0"}
+class ScanRequest(BaseModel):
+    session_id: str
 
-@router.get("/scan")
-async def scout_codebase():
+class ExplainRequest(BaseModel):
+    report: List[dict]
+
+# --- 1. UPLOAD (The Landing Zone) ---
+@router.post("/upload")
+async def upload_codebase(file: UploadFile = File(...)):
     """
-    Advanced SAST Scan.
-    Identifies Attack Surface (Routes) AND Dangerous Sinks (Hotspots).
+    Accepts a .zip file, creates a session, and returns the session_id.
     """
-    root_dir = Path("app")
-    parser = PythonParser()
+    if not file.filename.endswith(".zip"):
+        raise HTTPException(status_code=400, detail="Only .zip files are supported.")
+
+    session_id = workspace_manager.create_workspace()
+    await workspace_manager.save_and_extract_code(session_id, file)
     
-    scan_results = []
-    total_hotspots = 0
+    print(f"✅ Created workspace: {session_id}")
+    return {"session_id": session_id, "message": "Codebase uploaded successfully."}
 
-    print(f"🕵️ Scout scanning directory: {root_dir.absolute()}")
-
-    for file_path in root_dir.rglob("*.py"):
-        if "venv" in str(file_path) or "__pycache__" in str(file_path):
-            continue
+# --- 2. SCOUT (Session Aware) ---
+@router.post("/scan")
+async def scout_codebase(request: ScanRequest):
+    """
+    Scans the uploaded codebase for that specific session.
+    """
+    try:
+        # Get the real path for this session (e.g., temp_workspaces/abc-123/app)
+        session_path = workspace_manager.get_workspace_path(request.session_id)
         
-        try:
-            with open(file_path, "rb") as f:
-                code = f.read()
+        # We assume the zip contained an "app" folder or similar. 
+        # We scan the whole session folder.
+        root_dir = session_path
+        
+        parser = PythonParser()
+        scan_results = []
+        total_hotspots = 0
+
+        print(f"🕵️ Scout scanning session: {root_dir}")
+
+        for file_path in root_dir.rglob("*.py"):
+            if "venv" in str(file_path) or "__pycache__" in str(file_path):
+                continue
             
-            # 1. Find Attack Surface (Routes)
-            routes = parser.find_entry_points(code)
-            
-            # 2. Find Dangerous Sinks (Hotspots)
-            hotspots = parser.find_security_hotspots(code)
-            
-            # Logic: A file is interesting if it has Routes OR Hotspots
-            if routes or hotspots:
-                risk_score = len(routes) + (len(hotspots) * 5) # Hotspots are weighted higher
+            try:
+                with open(file_path, "rb") as f:
+                    code = f.read()
                 
-                scan_results.append({
-                    "file": str(file_path),
-                    "risk_score": risk_score,
-                    "routes": len(routes),
-                    "hotspots": hotspots, # List of specific dangers
-                    "route_details": [{"method": r["method"], "line": r["line"]} for r in routes]
-                })
-                total_hotspots += len(hotspots)
+                routes = parser.find_entry_points(code)
+                hotspots = parser.find_security_hotspots(code)
                 
-        except Exception as e:
-            print(f"⚠️ Error scanning {file_path}: {e}")
-            continue
+                if routes or hotspots:
+                    # Make path relative to the session root for display
+                    rel_path = file_path.relative_to(root_dir)
+                    
+                    risk_score = len(routes) + (len(hotspots) * 5)
+                    scan_results.append({
+                        "file": str(rel_path),
+                        "risk_score": risk_score,
+                        "routes": len(routes),
+                        "hotspots": hotspots,
+                        "route_details": [{"method": r["method"], "line": r["line"]} for r in routes]
+                    })
+                    total_hotspots += len(hotspots)
+                    
+            except Exception as e:
+                print(f"⚠️ Error scanning {file_path}: {e}")
+                continue
 
-    # Sort results so the most dangerous files are at the top
-    scan_results.sort(key=lambda x: x["risk_score"], reverse=True)
+        scan_results.sort(key=lambda x: x["risk_score"], reverse=True)
 
-    return {
-        "status": "complete",
-        "total_files_flagged": len(scan_results),
-        "total_security_hotspots": total_hotspots,
-        "results": scan_results
-    }
+        return {
+            "status": "complete",
+            "session_id": request.session_id,
+            "results": scan_results
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-# --- SECURE ENDPOINTS ---
-
-@router.post("/audit", dependencies=[Depends(get_current_user)]) # <--- LOCKED
+# --- 3. AUDIT (Session Aware) ---
+@router.post("/audit", dependencies=[Depends(get_current_user)])
 async def audit_code(request: AuditRequest):
     try:
-        root_dir = "app"
-        # Validate Input
-        safe_path = validate_file_path_within_root(request.file_path, root_dir)
+        session_path = workspace_manager.get_workspace_path(request.session_id)
         
-        auditor = SecurityAuditor(root_dir=root_dir)
-        report = auditor.audit_file(str(safe_path))
+        # Security: Prevent path traversal out of session
+        full_target_path = (session_path / request.file_path).resolve()
+        if not str(full_target_path).startswith(str(session_path.resolve())):
+             raise HTTPException(status_code=400, detail="Invalid file path.")
+
+        # Initialize Auditor with the SESSION DIRECTORY
+        auditor = SecurityAuditor(root_dir=str(session_path))
+        
+        # Pass the relative file path to the auditor
+        report = auditor.audit_file(request.file_path)
         return {"file": request.file_path, "report": report}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/fix", dependencies=[Depends(get_current_user)]) # <--- LOCKED
+# --- 4. PATCHER (Session Aware) ---
+@router.post("/fix", dependencies=[Depends(get_current_user)])
 async def fix_code(request: AuditRequest):
     try:
-        root_dir = "app"
-        # Validate Input
-        safe_path = validate_file_path_within_root(request.file_path, root_dir)
+        session_path = workspace_manager.get_workspace_path(request.session_id)
         
-        patcher = SecurityPatcher(root_dir=root_dir)
-        fixed_content = patcher.patch_file(str(safe_path))
+        full_target_path = (session_path / request.file_path).resolve()
+        if not str(full_target_path).startswith(str(session_path.resolve())):
+             raise HTTPException(status_code=400, detail="Invalid file path.")
+
+        patcher = SecurityPatcher(root_dir=str(session_path))
+        fixed_content = patcher.patch_file(request.file_path)
         return {"file": request.file_path, "fixed_code": fixed_content}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# --- 5. EXPLAINER (No File Access Needed) ---
+@router.post("/explain", dependencies=[Depends(get_current_user)])
+async def explain_report(request: ExplainRequest):
+    try:
+        translator = SecurityTranslator()
+        explanation = translator.translate_report(request.report)
+        return {"explanation": explanation}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/health")
+async def health_check():
+    return {"status": "active", "version": "0.2.0-session-aware"}
