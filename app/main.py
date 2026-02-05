@@ -8,6 +8,7 @@ app = FastAPI(
     version="0.1.0"
 )
 
+# Allow frontend to communicate with backend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -16,7 +17,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Connect the routes
+# Connect the new Router
 app.include_router(api_router)
 
 if __name__ == "__main__":
