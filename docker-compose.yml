@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  # 1. Your SentryAgent Backend
+  backend:
+    build: .
+    container_name: sentry_backend
+    ports:
+      - "8000:8000"  # Access FastAPI at localhost:8000
+    volumes:
+      - ./app:/app/app  # Hot-reload: Changing code locally updates container
+    environment:
+      - CHROMA_HOST=chromadb_server
+      - CHROMA_PORT=8000
+    depends_on:
+      - chromadb_server
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # 2. Chroma Vector Database
+  chromadb_server:
+    image: chromadb/chroma:latest
+    container_name: sentry_chromadb
+    ports:
+      - "8001:8000" # Access Chroma API at localhost:8001 (to avoid conflict)
+    volumes:
+      - ./chroma_data:/chroma/chroma  # Persist data so it survives restarts
+    environment:
+      - IS_PERSISTENT=TRUE
