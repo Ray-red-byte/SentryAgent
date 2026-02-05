@@ -1,9 +1,6 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-
-# Import our new Auditor
-from app.agent.auditor import SecurityAuditor
+from app.api.routes import router as api_router
 
 app = FastAPI(
     title="Vibe Security Agent",
@@ -19,26 +16,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-class AuditRequest(BaseModel):
-    file_path: str
-
-@app.get("/health")
-async def health_check():
-    return {"status": "active", "version": "0.1.0"}
-
-@app.post("/audit")
-async def audit_code(request: AuditRequest):
-    """
-    Triggers the AI to audit a specific file.
-    Example payload: {"file_path": "main.py"}
-    """
-    try:
-        # Initialize auditor (pointing to the internal /app/app directory)
-        auditor = SecurityAuditor(root_dir="app")
-        report = auditor.audit_file(request.file_path)
-        return {"file": request.file_path, "report": report}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# Connect the routes
+app.include_router(api_router)
 
 if __name__ == "__main__":
     import uvicorn
