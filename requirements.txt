@@ -8,3 +8,4 @@ tree-sitter-python>=0.23.0
 networkx
 matplotlib
 chromadb
+google-generativeai
