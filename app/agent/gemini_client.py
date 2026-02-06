@@ -56,3 +56,28 @@ class GeminiClient:
             return response.text
         except Exception as e:
             return f"Error contacting Gemini: {e}"
+        
+    def analyze_with_cache(self, prompt: str, cache_name: str):
+        """
+        Connects to an existing cache to answer the prompt.
+        """
+        if not self.api_key:
+            return "❌ Error: API Key missing."
+
+        try:
+            # 1. Reconnect to the specific cache
+            cache = genai.caching.CachedContent.get(cache_name)
+            
+            # 2. Initialize model pointing to that cache
+            # CRITICAL: This must be the exact same model version used to create the cache
+            model = genai.GenerativeModel.from_cached_content(cached_content=cache)
+            
+            # 3. Generate
+            print(f"⚡ Querying Cache {cache_name}...")
+            response = model.generate_content(prompt)
+            return response.text
+            
+        except Exception as e:
+            print(f"🔥 Cache Error: {e}")
+            # Fallback: If cache fails (expired?), try standard analyze
+            return self.analyze(prompt)

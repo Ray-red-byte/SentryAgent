@@ -1,6 +1,7 @@
 version: '3.8'
 
 services:
+  # --- BACKEND ---
   backend:
     build: .
     container_name: sentry_backend
@@ -8,13 +9,53 @@ services:
       - "8000:8000"
     volumes:
       - ./app:/app/app
-    # LOAD VARIABLES FROM .env FILE
+      - sentry_workspaces:/app/temp_workspaces
     env_file:
       - .env
     depends_on:
       - chromadb_server
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+      - db
+      - redis # <--- Added dependency
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-exclude "temp_workspaces/*"
 
+  # --- REDIS (New) ---
+  redis:
+    image: redis:alpine
+    container_name: sentry_redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes # Persist data to disk
+
+  # --- POSTGRESQL ---
+  db:
+    image: postgres:15-alpine
+    container_name: sentry_postgres
+    restart: always
+    environment:
+      - POSTGRES_USER=sentry_user
+      - POSTGRES_PASSWORD=sentry_pass
+      - POSTGRES_DB=sentry_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  # --- FRONTEND ---
+  frontend:
+    build: ./frontend
+    container_name: sentry_frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
+  # --- VECTOR DB ---
   chromadb_server:
     image: chromadb/chroma:latest
     container_name: sentry_chromadb
@@ -24,3 +65,8 @@ services:
       - ./chroma_data:/chroma/chroma
     environment:
       - IS_PERSISTENT=TRUE
+
+volumes:
+  sentry_workspaces:
+  postgres_data:
+  redis_data: # <--- New Volume
