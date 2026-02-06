@@ -1,6 +1,6 @@
 import chromadb
 import os
-from app.parser.chunker import CodeChunker
+from app.tools.parser.chunker import CodeChunker
 
 class CodebaseRAG:
     def __init__(self):

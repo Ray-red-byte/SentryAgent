@@ -93,3 +93,5 @@ db_storage/
 .vscode/
 *.swp
 *.swo
+
+/test

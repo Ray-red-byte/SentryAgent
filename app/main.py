@@ -1,6 +1,9 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes import router as api_router
+from app.databases.postgres import engine, Base
+
+Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="Vibe Security Agent",

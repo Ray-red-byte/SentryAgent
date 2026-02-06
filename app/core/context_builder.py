@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
-from app.parser.dependency_graph import DependencyMapper
-from app.core.vector_store import CodebaseRAG
+from app.tools.parser.dependency_graph import DependencyMapper
+from app.memory.vector_store import CodebaseRAG
 
 class ContextAssembler:
     def __init__(self, root_dir: str):

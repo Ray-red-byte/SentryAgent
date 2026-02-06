@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 from tree_sitter import Query, QueryCursor
-from app.parser.python_parser import PythonParser
+from app.tools.parser.python_parser import PythonParser
 
 class CodeChunker(PythonParser):
     def __init__(self, root_dir: str):

@@ -1,7 +1,7 @@
 from sqlalchemy import Column, String, Integer, ForeignKey, JSON, DateTime
 from sqlalchemy.orm import relationship
 from datetime import datetime
-from app.core.database import Base
+from app.databases.postgres import Base
 
 class AuditSession(Base):
     __tablename__ = "sessions"

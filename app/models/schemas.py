@@ -16,3 +16,8 @@ class ExplainRequest(BaseModel):
 class ExportRequest(BaseModel):
     session_id: str
     scan_results: List[dict]
+
+class ChatRequest(BaseModel):
+    session_id: str
+    file_path: str
+    query: str
