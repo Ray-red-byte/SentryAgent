@@ -21,3 +21,8 @@ class ChatRequest(BaseModel):
     session_id: str
     file_path: str
     query: str
+
+class ApplyFixRequest(BaseModel):
+    session_id: str
+    file_path: str
+    fixed_code: str

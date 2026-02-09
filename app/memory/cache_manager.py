@@ -5,15 +5,11 @@ from google.generativeai import caching
 
 class GeminiCacheManager:
     def __init__(self, api_key=None):
-        if not self.api_key:
-            # Try to load from env if not passed
-            self.api_key = os.getenv("GEMINI_API_KEY")
-            
+        self.api_key = api_key or os.getenv("GEMINI_API_KEY")
+        
         if not self.api_key:
             print("❌ CRITICAL: GEMINI_API_KEY is missing. Caching will fail.")
-            
-        self.api_key = api_key or os.getenv("GEMINI_API_KEY")
-        if self.api_key:
+        else:
             genai.configure(api_key=self.api_key)
 
     def create_cache_for_session(self, session_id: str, root_dir: str):
@@ -54,7 +50,7 @@ class GeminiCacheManager:
         print(f"🚀 Uploading {file_count} files to Gemini Cache...")
         
         cache = caching.CachedContent.create(
-            model='models/gemini-1.5-flash-001', # Must match the model used in Client
+            model='models/gemini-1.5-flash', # Must match the model used in Client
             display_name=f"session_{session_id}",
             system_instruction="You are a Senior Security Engineer. You have access to the full codebase in this chat.",
             contents=[full_text],

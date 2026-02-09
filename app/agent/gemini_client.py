@@ -20,7 +20,7 @@ class GeminiClient:
             # We prefer Flash (fast), then Pro (standard), then anything else.
             preferred_order = [
                 'models/gemini-1.5-flash',
-                'models/gemini-1.5-flash-001',
+                'models/gemini-1.5-flash-002',
                 'models/gemini-1.5-pro',
                 'models/gemini-pro',
                 'models/gemini-1.0-pro'

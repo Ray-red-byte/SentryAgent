@@ -17,7 +17,7 @@ from app.tools.parser.python_parser import PythonParser
 from app.core.workspace import WorkspaceManager
 from app.core.report_generator import ReportGenerator
 from app.core.utils import get_current_user
-from app.models.schemas import ChatRequest
+from app.models.schemas import ChatRequest, ApplyFixRequest
 
 # --- Models ---
 from app.models.audit_log import AuditLog
@@ -75,6 +75,8 @@ async def scout_codebase(request: ScanRequest):
     try:
         session_path = workspace_manager.get_workspace_path(request.session_id)
         root_dir = session_path
+
+        print("--------------root_dir----------------", root_dir)
         
         parser = PythonParser()
         scan_results = []
@@ -155,24 +157,31 @@ async def audit_code(
 
 # --- 4. PATCHER ---
 @router.post("/fix", dependencies=[Depends(get_current_user)])
-async def fix_code(request: AuditRequest):
+async def fix_code(
+    request: AuditRequest,
+    redis_client = Depends(get_redis)
+):
     try:
         session_path = workspace_manager.get_workspace_path(request.session_id)
         
-        # 1. Generate Fix
-        patcher = SecurityPatcher(root_dir=str(session_path))
-        fixed_content = patcher.patch_file(request.file_path)
+        # 2. Check Redis for active cache
+        cache_name = None
+        if redis_client:
+            cache_name = redis_client.get(f"cache:{request.session_id}")
         
-        # 2. SAVE TO MEMORY (The Learning Step)
-        # We need to know WHAT we fixed. In a real app, we'd pass the vuln ID.
-        # Here, we'll infer it or just store the file context.
+        # 3. Initialize Patcher
+        patcher = SecurityPatcher(root_dir=str(session_path))
+        
+        # 4. Generate Fix (Pass cache_name!)
+        fixed_content = patcher.patch_file(request.file_path, cache_name=cache_name)
+        
+        # 5. SAVE TO MEMORY (The Learning Step)
         try:
             historian = SecurityKnowledgeBase()
-            # We assume the fix addresses a vulnerability in this file
             historian.learn_fix(
                 vuln_type="General Fix", 
                 description=f"Security Patch for {request.file_path}", 
-                fix_code=fixed_content[:1000] # Store snippet to save space
+                fix_code=fixed_content[:1000] 
             )
         except Exception as e:
             print(f"⚠️ Memory save failed (non-critical): {e}")
@@ -180,7 +189,69 @@ async def fix_code(request: AuditRequest):
         return {"file": request.file_path, "fixed_code": fixed_content}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    
+@router.post("/chat", dependencies=[Depends(get_current_user)])
+async def chat_with_code(
+    request: ChatRequest,
+    redis_client = Depends(get_redis)
+):
+    try:
+        session_path = workspace_manager.get_workspace_path(request.session_id)
+        
+        # Security Check
+        full_target_path = (session_path / request.file_path).resolve()
+        if not str(full_target_path).startswith(str(session_path.resolve())):
+             raise HTTPException(status_code=400, detail="Invalid file path.")
 
+        # Check Cache
+        cache_name = None
+        if redis_client:
+            cache_name = redis_client.get(f"cache:{request.session_id}")
+
+        # Initialize Auditor
+        auditor = SecurityAuditor(root_dir=str(session_path))
+        
+        # DELEGATE TO AGENT
+        response = auditor.chat_with_file(
+            file_path=request.file_path,
+            query=request.query,
+            cache_name=cache_name,
+            full_path=str(full_target_path)
+        )
+
+        return {"response": response}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/apply", dependencies=[Depends(get_current_user)])
+async def apply_fix(
+    request: ApplyFixRequest,
+    redis_client = Depends(get_redis)
+):
+    try:
+        session_path = workspace_manager.get_workspace_path(request.session_id)
+        full_target_path = (session_path / request.file_path).resolve()
+        
+        # Security: Prevent overwriting files outside the session
+        if not str(full_target_path).startswith(str(session_path.resolve())):
+             raise HTTPException(status_code=400, detail="Invalid file path.")
+
+        # 1. Overwrite the file
+        with open(full_target_path, "w", encoding="utf-8") as f:
+            f.write(request.fixed_code)
+            
+        # 2. INVALIDATE CACHE (Crucial!)
+        # The cache now holds the OLD code. We must force a refresh.
+        if redis_client:
+            redis_client.delete(f"cache:{request.session_id}")
+            print(f"🧹 Cache invalidated for session {request.session_id}")
+
+        return {"status": "applied", "message": "Fix applied. Cache cleared."}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
 # --- 5. EXPLAINER ---
 @router.post("/explain", dependencies=[Depends(get_current_user)])
 async def explain_report(request: ExplainRequest):

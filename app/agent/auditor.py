@@ -37,6 +37,40 @@ class SecurityAuditor:
         # 3. Call LLM
         raw_response = self.llm.analyze_with_cache(final_prompt, cache_name)
         return self.parse_json_response(raw_response)
+    
+    def chat_with_file(self, file_path: str, query: str, cache_name: str = None, full_path: str = None):
+        """
+        Handles the logic for chatting with a specific file.
+        Uses Cache if available, otherwise falls back to reading the file.
+        """
+        print(f"💬 Chatting about {file_path}...")
+
+        # 1. Fetch Prompt from Hub
+        prompt = self.prompts.get_prompt(
+            "chat.default", 
+            file_path=file_path, 
+            query=query
+        )
+
+        # 2. Call LLM (Fast vs Slow Path)
+        if cache_name:
+            # FAST PATH: Use the cached context
+            response = self.llm.generate_content_with_cache(prompt, cache_name)
+        else:
+            # SLOW PATH: Read file manually (Fallback)
+            if not full_path:
+                return "Error: File path required for non-cached chat."
+            
+            try:
+                with open(full_path, "r") as f:
+                    code = f.read()
+                # Append code to prompt since it's not in cache
+                final_prompt = f"{prompt}\n\n=== CODE ===\n{code}"
+                response = self.llm.analyze(final_prompt)
+            except Exception as e:
+                return f"Error reading file: {str(e)}"
+
+        return response
 
     def audit_file(self, file_path: str):
         """
