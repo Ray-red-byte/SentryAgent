@@ -5,7 +5,7 @@ This module defines the state machines that orchestrate the security scanning pr
 """
 from langgraph.graph import StateGraph, END
 from app.workflows.decision import is_patch_approved, should_deep_audit, should_prioritize, review_patch_node
-from app.workflows.state import ScanState, AuditState, PatchState
+from app.workflows.state import ScanState, AuditState, PatchState, ChatState
 from app.workflows.nodes import (
     # Scan workflow nodes
     discover_files,
@@ -16,6 +16,8 @@ from app.workflows.nodes import (
     generate_report,
     # Audit workflow nodes
     audit_single_file,
+    # Chat workflow nodes
+    run_chat_node,
     # Patch workflow nodes
     generate_patch,
     save_patch_to_memory
@@ -134,6 +136,28 @@ def create_patch_workflow():
 
 
 # ============================================================================
+# CHAT WORKFLOW
+# ============================================================================
+
+def create_chat_workflow():
+    """
+    Creates a simple workflow for chatting about a single file.
+
+    Flow:
+    1. Run chat node (calls SecurityAuditor.chat_with_file)
+    2. End
+    """
+    workflow = StateGraph(ChatState)
+
+    workflow.add_node("chat", run_chat_node)
+
+    workflow.set_entry_point("chat")
+    workflow.add_edge("chat", END)
+
+    return workflow.compile()
+
+
+# ============================================================================
 # WORKFLOW INSTANCES (Singletons)
 # ============================================================================
 
@@ -141,6 +165,7 @@ def create_patch_workflow():
 scan_workflow = create_scan_workflow()
 audit_workflow = create_audit_workflow()
 patch_workflow = create_patch_workflow()
+chat_workflow = create_chat_workflow()
 
 
 # ============================================================================
@@ -276,3 +301,45 @@ async def run_patch_generation(
         raise Exception(result["error"])
     
     return result["patched_code"]
+
+
+async def run_chat(
+    session_id: str,
+    file_path: str,
+    root_dir: str,
+    query: str,
+    cache_name: str = None,
+) -> str:
+    """
+    Answer a developer's question about a specific file using the LangGraph chat workflow.
+
+    Args:
+        session_id: Unique session identifier
+        file_path: Relative path to the file being discussed
+        root_dir: Root directory of the workspace
+        query: Developer's question
+        cache_name: Optional Gemini cache name
+
+    Returns:
+        AI-generated response string
+    """
+    initial_state: ChatState = {
+        "session_id": session_id,
+        "file_path": file_path,
+        "root_dir": root_dir,
+        "query": query,
+        "cache_name": cache_name,
+        "conversation_history": [],
+        "response": "",
+        "current_stage": "init",
+        "error": None,
+    }
+
+    print(f"💬 Starting chat for file: {file_path}")
+
+    result = await chat_workflow.ainvoke(initial_state)
+
+    if result["current_stage"] == "error":
+        raise Exception(result.get("error", "Chat failed"))
+
+    return result["response"]

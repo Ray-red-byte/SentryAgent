@@ -14,7 +14,7 @@ import chromadb
 
 logger = logging.getLogger(__name__)
 
-COLLECTION_NAME = "sentry_knowledge_base"
+COLLECTION_NAME = "security_knowledge_base"
 
 
 class SecurityKnowledgeBase:

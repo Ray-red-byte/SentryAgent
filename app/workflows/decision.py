@@ -26,7 +26,9 @@ def should_deep_audit(state: ScanState) -> str:
 
 
 def is_patch_approved(state: PatchState) -> str:
-    """Routes based on the Reviewer Node's feedback."""
+    """
+    Routes based on the Reviewer Node's feedback.
+    """
     is_approved = state.get("is_approved", False)
     retries = state.get("retry_count", 0)
     MAX_RETRIES = 3

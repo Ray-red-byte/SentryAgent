@@ -1,14 +1,71 @@
 import re
+import ast
 import json
 import logging
 from pathlib import Path
+from langchain_core.tools import tool
+from langgraph.prebuilt import create_react_agent
+
 from app.core.context_builder import ContextAssembler
 from app.agent.gemini_client import GeminiClient
 from app.prompts.manager import PromptManager
 from app.memory.knowledge_base import SecurityKnowledgeBase
+from app.tools.patch_reason import run_pytest
 
 logger = logging.getLogger(__name__)
 
+
+# ============================================================================
+# LANGCHAIN TOOLS — used by the patcher ReAct subgraph
+# ============================================================================
+
+@tool
+def ast_check(code: str) -> dict:
+    """
+    Validates that a Python code string has valid syntax using the AST parser.
+    Returns a dict with 'valid' (bool) and optionally 'error' (str).
+    Always call this tool after generating a patch to verify syntax before submitting.
+    """
+    try:
+        ast.parse(code)
+        return {"valid": True, "message": "Syntax is valid Python."}
+    except SyntaxError as e:
+        return {
+            "valid": False,
+            "error": f"SyntaxError on line {e.lineno}: {e.msg}",
+        }
+
+
+# ============================================================================
+# PATCHER SUBGRAPH — ReAct agent that generates + self-verifies patches
+# ============================================================================
+
+def build_patcher_agent():
+    """
+    Builds a LangGraph ReAct agent for generating and verifying security patches.
+    The agent has two tools:
+      - ast_check: validates Python syntax of generated code
+      - run_pytest: runs the test suite against the patched file
+    Returns a compiled LangGraph graph (the subgraph).
+    """
+    llm = GeminiClient().get_model()
+    tools = [ast_check, run_pytest]
+
+    return create_react_agent(
+        model=llm,
+        tools=tools,
+        state_modifier=(
+            "You are a Senior Security Engineer. Your job is to fix security vulnerabilities "
+            "in Python code with minimal, surgical changes. After writing a fix, ALWAYS call "
+            "the ast_check tool to verify syntax before finishing. "
+            "If ast_check returns an error, fix the syntax and check again."
+        ),
+    )
+
+
+# ============================================================================
+# SECURITY PATCHER — primary patching agent used by workflow nodes
+# ============================================================================
 
 class SecurityPatcher:
     def __init__(self, root_dir="app"):
@@ -72,8 +129,6 @@ class SecurityPatcher:
         logger.info("Patcher generated %d chars for %s", len(fixed_code), file_path)
         return fixed_code
 
-    # ------------------------------------------------------------------
-
     def clean_output(self, text: str) -> str:
         """Strip markdown fences and leading/trailing whitespace."""
         if not text:
@@ -110,10 +165,6 @@ class SecurityPatcher:
                 "is_approved": True,
                 "feedback": f"Review could not parse AI output (auto-approved). Raw: {response_text[:200]}",
             }
-
-    # ------------------------------------------------------------------
-    # Private helpers
-    # ------------------------------------------------------------------
 
     def _read_file(self, file_path: str) -> str:
         """Read the target file from the workspace root."""

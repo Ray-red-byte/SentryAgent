@@ -28,7 +28,8 @@ from app.memory.cache_manager import GeminiCacheManager
 from app.workflows.graphs import (
     run_full_scan,
     run_file_audit,
-    run_patch_generation
+    run_patch_generation,
+    run_chat,
 )
 
 # --- Core Imports ---
@@ -52,7 +53,6 @@ from app.memory.knowledge_base import SecurityKnowledgeBase
 
 # --- Legacy Agents (for features not yet migrated) ---
 from app.agent.translator import SecurityTranslator
-from app.agent.auditor import SecurityAuditor
 
 logger = logging.getLogger(__name__)
 
@@ -297,9 +297,9 @@ async def chat_with_code(
     redis_client=Depends(get_redis),
 ):
     """
-    Chat with code (using legacy auditor for now).
-
-    TODO: Migrate to LangGraph ChatState workflow
+    Chat with code using the LangGraph ChatState workflow.
+    Answers developer questions about a specific file, using the Gemini cache
+    when available for faster responses.
     """
     try:
         session_path = workspace_manager.get_workspace_path(request.session_id)
@@ -314,14 +314,13 @@ async def chat_with_code(
         if redis_client:
             cache_name = redis_client.get(f"cache:{request.session_id}")
 
-        # Use legacy auditor for now
-        auditor = SecurityAuditor(root_dir=str(session_path))
-
-        response = auditor.chat_with_file(
+        # Run the LangGraph chat workflow
+        response = await run_chat(
+            session_id=request.session_id,
             file_path=request.file_path,
+            root_dir=str(session_path),
             query=request.query,
             cache_name=cache_name,
-            full_path=str(full_target_path),
         )
 
         return {"response": response}

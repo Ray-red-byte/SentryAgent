@@ -3,6 +3,7 @@ import re
 import time
 import logging
 import google.generativeai as genai
+from langchain_google_genai import ChatGoogleGenerativeAI
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +117,22 @@ class GeminiClient:
         Returns the raw text instead of trying to parse JSON.
         """
         return self.analyze_with_cache(prompt, cache_name)
+
+    def get_model(self) -> ChatGoogleGenerativeAI:
+        """
+        Returns a LangChain-compatible ChatGoogleGenerativeAI instance.
+        Used by create_react_agent() in the patcher subgraph.
+        Selects the same preferred model as _auto_select_model().
+        """
+        api_key = self.api_key or os.getenv("GEMINI_API_KEY", "")
+        # Prefer gemini-2.0-flash as it's fast and supports tool-use well
+        model_name = "gemini-2.0-flash"
+        return ChatGoogleGenerativeAI(
+            model=model_name,
+            google_api_key=api_key,
+            temperature=0.1,
+            convert_system_message_to_human=True,
+        )
 
     # ------------------------------------------------------------------
     # PRIVATE HELPERS

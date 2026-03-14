@@ -2,7 +2,7 @@
 import redis
 import os
 
-class RedisClientWrapper:
+class RedisClient:
     _client = None
 
     @property
@@ -15,7 +15,7 @@ class RedisClientWrapper:
                     host=host,
                     port=port,
                     db=0,
-                    decode_responses=True, # Returns strings instead of bytes
+                    decode_responses=True,
                     socket_connect_timeout=2
                 )
                 # Quick ping to check connection
@@ -27,11 +27,11 @@ class RedisClientWrapper:
         return self._client
 
 # Singleton instance
-redis_wrapper = RedisClientWrapper()
+redis_client = RedisClient()
 
 def get_redis():
     """
     Dependency to get the Redis client.
     Usage: client = get_redis()
     """
-    return redis_wrapper.client
+    return redis_client.client
