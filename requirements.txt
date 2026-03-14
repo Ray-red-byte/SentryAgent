@@ -30,3 +30,6 @@ redis==5.0.1
 
 # Reporting
 reportlab==4.0.9
+
+# Authentication
+PyJWT>=2.8.0

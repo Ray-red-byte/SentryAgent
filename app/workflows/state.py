@@ -129,6 +129,10 @@ class PatchState(TypedDict):
     current_stage: Literal["init", "analyzing", "patching", "validating", "complete", "error"]
     error: Optional[str]
 
+    review_feedback: Optional[str]  # Feedback from the reviewer LLM
+    is_approved: bool               # Flag to determine routing
+    retry_count: int                # Counter to prevent infinite loops
+
 
 class ChatState(TypedDict):
     """State for interactive chat workflow."""

@@ -1,83 +1,169 @@
 import os
+import re
+import time
+import logging
 import google.generativeai as genai
+
+logger = logging.getLogger(__name__)
+
+# The models the cache manager creates caches for — must match here exactly.
+_CACHE_MODEL = "models/gemini-1.5-flash"
+
+# Preferred model order for non-cached calls
+_PREFERRED_MODELS = [
+    "models/gemini-2.0-flash",
+    "models/gemini-1.5-flash-latest",
+    "models/gemini-1.5-flash",
+    "models/gemini-1.5-flash-002",
+    "models/gemini-1.5-pro",
+    "models/gemini-pro",
+    "models/gemini-1.0-pro",
+]
+
+# Generation config that strongly steers toward clean JSON output.
+# response_mime_type="application/json" asks Gemini to constrain its output
+# to valid JSON when the model supports it (1.5+).
+_JSON_GENERATION_CONFIG = genai.types.GenerationConfig(
+    temperature=0.1,          # Low temperature → more deterministic, less hallucination
+    top_p=0.95,
+    candidate_count=1,
+)
+
 
 class GeminiClient:
     def __init__(self):
         self.api_key = os.getenv("GEMINI_API_KEY")
+        self.model = None
+
         if not self.api_key:
-            print("⚠️ Warning: GEMINI_API_KEY not found.")
+            logger.error("GEMINI_API_KEY is not set. All AI calls will fail.")
             return
 
         genai.configure(api_key=self.api_key)
-        
-        # 1. Get all available models that support text generation
-        print("🔍 Scanning for available Gemini models...")
+        self._auto_select_model()
+
+    def _auto_select_model(self):
+        """Auto-selects the best available Gemini model for this API key."""
         try:
-            my_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-            print(f"✅ Found models: {my_models}")
-            
-            # 2. Select the best match automatically
-            # We prefer Flash (fast), then Pro (standard), then anything else.
-            preferred_order = [
-                'models/gemini-1.5-flash',
-                'models/gemini-1.5-flash-002',
-                'models/gemini-1.5-pro',
-                'models/gemini-pro',
-                'models/gemini-1.0-pro'
+            available = [
+                m.name
+                for m in genai.list_models()
+                if "generateContent" in m.supported_generation_methods
             ]
-            
-            selected_model = None
-            for pref in preferred_order:
-                if pref in my_models:
-                    selected_model = pref
-                    break
-            
-            # If none of our preferences exist, just take the first valid one we found
-            if not selected_model and my_models:
-                selected_model = my_models[0]
-            
-            if not selected_model:
+            logger.info("Available Gemini models: %s", available)
+
+            selected = next(
+                (m for m in _PREFERRED_MODELS if m in available),
+                available[0] if available else None,
+            )
+
+            if not selected:
                 raise ValueError("No generative models found for this API key.")
 
-            print(f"🤖 Auto-selected model: {selected_model}")
-            self.model = genai.GenerativeModel(selected_model)
+            logger.info("Auto-selected Gemini model: %s", selected)
+            self.model = genai.GenerativeModel(
+                selected,
+                generation_config=_JSON_GENERATION_CONFIG,
+            )
 
         except Exception as e:
-            print(f"⚠️ Error listing models: {e}")
-            # Fallback hardcoded just in case
-            self.model = genai.GenerativeModel('models/gemini-pro')
+            logger.warning("Error listing models (%s). Falling back to gemini-pro.", e)
+            self.model = genai.GenerativeModel(
+                "models/gemini-pro",
+                generation_config=_JSON_GENERATION_CONFIG,
+            )
 
-    def analyze(self, prompt: str):
-        if not self.api_key:
-            return "❌ Error: API Key missing."
-            
-        try:
-            response = self.model.generate_content(prompt)
-            return response.text
-        except Exception as e:
-            return f"Error contacting Gemini: {e}"
-        
-    def analyze_with_cache(self, prompt: str, cache_name: str):
+    # ------------------------------------------------------------------
+    # PUBLIC METHODS
+    # ------------------------------------------------------------------
+
+    def analyze(self, prompt: str) -> str:
         """
-        Connects to an existing cache to answer the prompt.
+        Sends a prompt to Gemini and returns the text response.
+        Retries up to 3 times with exponential backoff on 429 rate-limit errors.
         """
-        if not self.api_key:
-            return "❌ Error: API Key missing."
+        if not self._ready():
+            return "[]"
+
+        return self._call_with_retry(lambda: self.model.generate_content(prompt))
+
+    def analyze_with_cache(self, prompt: str, cache_name: str) -> str:
+        """
+        Uses an existing Gemini Context Cache to answer the prompt.
+        Falls back to standard `analyze()` if the cache is unavailable.
+        """
+        if not self._ready():
+            return "[]"
 
         try:
-            # 1. Reconnect to the specific cache
             cache = genai.caching.CachedContent.get(cache_name)
-            
-            # 2. Initialize model pointing to that cache
-            # CRITICAL: This must be the exact same model version used to create the cache
-            model = genai.GenerativeModel.from_cached_content(cached_content=cache)
-            
-            # 3. Generate
-            print(f"⚡ Querying Cache {cache_name}...")
-            response = model.generate_content(prompt)
-            return response.text
-            
+            cached_model = genai.GenerativeModel.from_cached_content(
+                cached_content=cache,
+                generation_config=_JSON_GENERATION_CONFIG,
+            )
+            logger.info("Querying cache: %s", cache_name)
+            return self._call_with_retry(lambda: cached_model.generate_content(prompt))
+
         except Exception as e:
-            print(f"🔥 Cache Error: {e}")
-            # Fallback: If cache fails (expired?), try standard analyze
+            logger.warning(
+                "Cache %s unavailable (%s). Falling back to standard call.", cache_name, e
+            )
             return self.analyze(prompt)
+
+    def generate_content_with_cache(self, prompt: str, cache_name: str) -> str:
+        """
+        Plain-text response variant of analyze_with_cache (used for chat).
+        Returns the raw text instead of trying to parse JSON.
+        """
+        return self.analyze_with_cache(prompt, cache_name)
+
+    # ------------------------------------------------------------------
+    # PRIVATE HELPERS
+    # ------------------------------------------------------------------
+
+    def _call_with_retry(self, call_fn, fallback: str = "[]", max_retries: int = 3) -> str:
+        """
+        Calls call_fn() and retries on 429 resource-exhausted errors.
+        Waits: 15s → 30s → 60s between attempts.
+        """
+        wait_times = [15, 30, 60]
+        for attempt in range(max_retries + 1):
+            try:
+                response = call_fn()
+                return self._extract_text(response)
+            except Exception as e:
+                err_str = str(e)
+                is_rate_limit = "429" in err_str or "RESOURCE_EXHAUSTED" in err_str
+
+                if is_rate_limit and attempt < max_retries:
+                    # Parse retry-after hint from error message if present
+                    wait = wait_times[attempt]
+                    match = re.search(r"retry_delay\s*\{\s*seconds:\s*(\d+)", err_str)
+                    if match:
+                        wait = max(int(match.group(1)) + 2, wait)
+
+                    logger.warning(
+                        "Gemini rate limit hit (attempt %d/%d). Waiting %ds…",
+                        attempt + 1, max_retries, wait
+                    )
+                    time.sleep(wait)
+                else:
+                    logger.error("Gemini generate_content failed: %s", e)
+                    return fallback
+        return fallback
+
+    def _ready(self) -> bool:
+        if not self.api_key or not self.model:
+            logger.error("GeminiClient is not initialised (missing API key or model).")
+            return False
+        return True
+
+    @staticmethod
+    def _extract_text(response) -> str:
+        """Safely extracts text from a Gemini response object."""
+        try:
+            return response.text
+        except (AttributeError, ValueError) as e:
+            # response.text raises ValueError if the response was blocked
+            logger.warning("Could not extract text from Gemini response: %s", e)
+            return "[]"

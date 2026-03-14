@@ -4,6 +4,7 @@ LangGraph workflow definitions for SentryAgent.
 This module defines the state machines that orchestrate the security scanning process.
 """
 from langgraph.graph import StateGraph, END
+from app.workflows.decision import is_patch_approved, should_deep_audit, should_prioritize, review_patch_node
 from app.workflows.state import ScanState, AuditState, PatchState
 from app.workflows.nodes import (
     # Scan workflow nodes
@@ -17,10 +18,7 @@ from app.workflows.nodes import (
     audit_single_file,
     # Patch workflow nodes
     generate_patch,
-    save_patch_to_memory,
-    # Conditional routing
-    should_deep_audit,
-    should_prioritize
+    save_patch_to_memory
 )
 
 
@@ -108,21 +106,28 @@ def create_audit_workflow():
 # ============================================================================
 
 def create_patch_workflow():
-    """
-    Creates a workflow for generating and learning from patches.
-    
-    Flow:
-    1. Generate patch
-    2. Save to memory
-    3. End
-    """
     workflow = StateGraph(PatchState)
     
+    # 1. Generate the fix
     workflow.add_node("patch", generate_patch)
+    # 2. Critically review the fix
+    workflow.add_node("review", review_patch_node)
+    # 3. Save to DB
     workflow.add_node("save_memory", save_patch_to_memory)
     
     workflow.set_entry_point("patch")
-    workflow.add_edge("patch", "save_memory")
+    workflow.add_edge("patch", "review")
+    
+    # ADD A CONDITIONAL LOOP FOR REFLECTION
+    workflow.add_conditional_edges(
+        "review",
+        is_patch_approved,
+        {
+            "approved": "save_memory",  # If good, save it
+            "rejected": "patch"         # If bad, loop back to patcher with feedback
+        }
+    )
+    
     workflow.add_edge("save_memory", END)
     
     return workflow.compile()
@@ -256,7 +261,11 @@ async def run_patch_generation(
         "patched_code": "",
         "patch_applied": False,
         "current_stage": "init",
-        "error": None
+        "error": None,
+        # Required by is_patch_approved() and review_patch_node()
+        "retry_count": 0,
+        "is_approved": False,
+        "review_feedback": None,
     }
     
     print(f"🔧 Generating patch for: {file_path}")

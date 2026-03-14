@@ -1,204 +1,535 @@
 import React, { useState, useEffect, useRef } from 'react';
-import api from '../api';
-import { ShieldAlert, Wrench, MessageSquare, Send, User, Bot, Play, Loader2, Save, CheckCircle } from 'lucide-react';
+import api, { tokenStore } from '../api';
+import {
+    ShieldAlert, Wrench, MessageSquare, Send, User, Bot,
+    Play, Loader2, Save, CheckCircle, Download, RefreshCw,
+    AlertCircle, Info, ChevronRight,
+} from 'lucide-react';
 
+// ── Severity helpers ────────────────────────────────────────────────────────
+const SEVERITY_STYLES = {
+    CRITICAL: 'bg-red-900/40 text-red-300 border-red-500/40',
+    HIGH: 'bg-orange-900/40 text-orange-300 border-orange-500/40',
+    MEDIUM: 'bg-yellow-900/30 text-yellow-300 border-yellow-500/30',
+    LOW: 'bg-blue-900/30 text-blue-300 border-blue-500/30',
+    INFO: 'bg-gray-800/50 text-gray-300 border-gray-600/40',
+    ERROR: 'bg-red-900/20 text-red-400 border-red-600/30',
+};
+
+const SEVERITY_DOT = {
+    CRITICAL: 'bg-red-400',
+    HIGH: 'bg-orange-400',
+    MEDIUM: 'bg-yellow-400',
+    LOW: 'bg-blue-400',
+    INFO: 'bg-gray-400',
+    ERROR: 'bg-red-500',
+};
+
+function SeverityBadge({ severity }) {
+    const s = (severity || 'INFO').toUpperCase();
+    return (
+        <span className={`text-[10px] font-bold px-2 py-0.5 rounded border uppercase tracking-wide ${SEVERITY_STYLES[s] || SEVERITY_STYLES.INFO}`}>
+            {s}
+        </span>
+    );
+}
+
+// ── Progress bar ─────────────────────────────────────────────────────────────
+function ProgressBar({ value, label }) {
+    return (
+        <div className="space-y-1.5">
+            <div className="flex justify-between text-xs text-gray-400">
+                <span>{label}</span>
+                <span>{value}%</span>
+            </div>
+            <div className="w-full bg-gray-800 rounded-full h-1.5">
+                <div
+                    className="h-1.5 rounded-full bg-gradient-to-r from-sentry-accent to-blue-500 transition-all duration-700"
+                    style={{ width: `${value}%` }}
+                />
+            </div>
+        </div>
+    );
+}
+
+// ── Main component ────────────────────────────────────────────────────────────
 const AuditWorkspace = ({ sessionId, file }) => {
     const [report, setReport] = useState([]);
     const [fixedCode, setFixedCode] = useState(null);
     const [chatHistory, setChatHistory] = useState([]);
-    const [chatInput, setChatInput] = useState("");
+    const [chatInput, setChatInput] = useState('');
     const [loading, setLoading] = useState(false);
     const [activeTab, setActiveTab] = useState('audit');
     const [hasAudited, setHasAudited] = useState(false);
+    const [applyState, setApplyState] = useState('idle'); // idle | applying | applied | error
+    const [downloadUrl, setDownloadUrl] = useState(null);
+    const [progress, setProgress] = useState(0);
+    const [progressLabel, setProgressLabel] = useState('');
     const chatEndRef = useRef(null);
 
-    // Reset state when file changes (New Upload / Selection)
+    // Progressive audit animation (fake progress while AI thinks)
+    const progressTimerRef = useRef(null);
+    const startProgressAnimation = (startPct, endPct, label, durationMs) => {
+        clearInterval(progressTimerRef.current);
+        setProgressLabel(label);
+        setProgress(startPct);
+        const step = (endPct - startPct) / (durationMs / 200);
+        progressTimerRef.current = setInterval(() => {
+            setProgress(p => {
+                if (p >= endPct) { clearInterval(progressTimerRef.current); return endPct; }
+                return Math.min(p + step, endPct);
+            });
+        }, 200);
+    };
+
+    // Reset when file changes
     useEffect(() => {
         setReport([]);
         setFixedCode(null);
         setChatHistory([]);
         setActiveTab('audit');
         setHasAudited(false);
+        setApplyState('idle');
+        setDownloadUrl(null);
+        setProgress(0);
+        clearInterval(progressTimerRef.current);
     }, [file]);
 
     // Auto-scroll chat
     useEffect(() => {
-        chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+        chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [chatHistory, activeTab]);
+
+    // Clean up timer
+    useEffect(() => () => clearInterval(progressTimerRef.current), []);
+
+    // ── Actions ────────────────────────────────────────────────────────────────
 
     const runAudit = async () => {
         if (loading) return;
         setLoading(true);
+        setHasAudited(false);
+        setReport([]);
+        startProgressAnimation(0, 85, 'AI analyzing file…', 40000);
+
         try {
-            const res = await api.post("/audit", { session_id: sessionId, file_path: file.file });
-            setReport(Array.isArray(res.data.report) ? res.data.report : []);
+            const filePath = file.file || file.file_path;
+            const res = await api.post('/audit', { session_id: sessionId, file_path: filePath });
+            const raw = Array.isArray(res.data.report) ? res.data.report : [];
+
+            // Filter out parser-error meta-entries for display
+            const findings = raw.filter(v => v.severity !== 'ERROR');
+            setReport(findings.length > 0 ? findings : raw);
             setHasAudited(true);
+            setProgress(100);
+            setProgressLabel('Audit complete');
         } catch (err) {
-            console.error(err);
-            setReport([]);
+            console.error('Audit failed:', err);
+            setReport([{ severity: 'ERROR', type: 'Connection Error', description: err.response?.data?.detail || err.message, fix: '' }]);
+            setHasAudited(true);
         } finally {
             setLoading(false);
+            clearInterval(progressTimerRef.current);
         }
     };
 
     const runFix = async () => {
         if (fixedCode) { setActiveTab('fix'); return; }
         setLoading(true);
+        startProgressAnimation(0, 90, 'Generating security patch…', 60000);
+
         try {
-            const res = await api.post("/fix", { session_id: sessionId, file_path: file.file });
+            const filePath = file.file || file.file_path;
+            const res = await api.post('/fix', { session_id: sessionId, file_path: filePath });
             setFixedCode(res.data.fixed_code);
             setActiveTab('fix');
-        } catch (err) { console.error(err); } finally { setLoading(false); }
+            setProgress(100);
+            setProgressLabel('Patch ready');
+        } catch (err) {
+            console.error('Fix failed:', err);
+        } finally {
+            setLoading(false);
+            clearInterval(progressTimerRef.current);
+        }
     };
 
     const applyFix = async () => {
         if (!fixedCode) return;
+        setApplyState('applying');
         setLoading(true);
+
+        // Collect vuln metadata from the audit report for knowledge base learning
+        const vulnTypes = [...new Set(report.map(v => v.type).filter(Boolean))].join(', ');
+        const topSeverity = report.find(v => ['CRITICAL', 'HIGH'].includes(v.severity))?.severity || 'MEDIUM';
+        const cwes = [...new Set(report.map(v => v.cwe).filter(Boolean))].join(', ');
+        const filePath = file.file || file.file_path;
+
         try {
-            await api.post("/apply", { session_id: sessionId, file_path: file.file, fixed_code: fixedCode });
-            setReport([]); setFixedCode(null); setHasAudited(false); setActiveTab('audit');
-            setTimeout(() => runAudit(), 500); // Auto Re-Verify
-        } catch (err) { alert("Failed to apply fix."); } finally { setLoading(false); }
+            const res = await api.post('/apply', {
+                session_id: sessionId,
+                file_path: filePath,
+                fixed_code: fixedCode,
+                vuln_type: vulnTypes || 'Security Fix',
+                severity: topSeverity,
+                cwe: cwes,
+            });
+
+            setApplyState('applied');
+            setDownloadUrl(`/v2/download/${sessionId}`);
+
+            // Auto re-audit after 500ms to show the "clean" state
+            setTimeout(() => {
+                setFixedCode(null);
+                setActiveTab('audit');
+                setHasAudited(false);
+                runAudit();
+            }, 800);
+        } catch (err) {
+            console.error('Apply failed:', err);
+            setApplyState('error');
+            alert('Failed to apply fix: ' + (err.response?.data?.detail || err.message));
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleDownload = () => {
+        // Use the token-authenticated download endpoint
+        const token = tokenStore.get();
+        const filePath = file.file || file.file_path;
+        const url = `http://localhost:8000/v2/download/${sessionId}/${filePath}`;
+        const a = document.createElement('a');
+        a.href = url;
+        // For authenticated download we fetch via JS and create a blob URL
+        fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+            .then(r => r.blob())
+            .then(blob => {
+                const blobUrl = URL.createObjectURL(blob);
+                a.href = blobUrl;
+                a.download = filePath.split('/').pop();
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                URL.revokeObjectURL(blobUrl);
+            })
+            .catch(err => alert('Download failed: ' + err.message));
+    };
+
+    const handleDownloadZip = () => {
+        const token = tokenStore.get();
+        const url = `http://localhost:8000/v2/download/${sessionId}`;
+        fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+            .then(r => r.blob())
+            .then(blob => {
+                const blobUrl = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = blobUrl;
+                a.download = `sentry_fixed_${sessionId.slice(0, 8)}.zip`;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                URL.revokeObjectURL(blobUrl);
+            })
+            .catch(err => alert('Download failed: ' + err.message));
     };
 
     const sendChat = async () => {
         if (!chatInput.trim()) return;
         const userMsg = { role: 'user', text: chatInput };
         setChatHistory(prev => [...prev, userMsg]);
-        setChatInput("");
+        setChatInput('');
         setLoading(true);
 
         try {
-            const res = await api.post("/chat", {
+            const filePath = file.file || file.file_path;
+            const res = await api.post('/chat', {
                 session_id: sessionId,
-                file_path: file.file,
-                query: userMsg.text
+                file_path: filePath,
+                query: userMsg.text,
             });
             setChatHistory(prev => [...prev, { role: 'ai', text: res.data.response }]);
         } catch (err) {
-            setChatHistory(prev => [...prev, { role: 'ai', text: "Error connecting to AI." }]);
+            setChatHistory(prev => [...prev, { role: 'ai', text: 'Error: ' + (err.response?.data?.detail || err.message) }]);
         } finally {
             setLoading(false);
         }
     };
 
-    // Logic to Disable Fix Button
-    // Disabled if: Not Audited OR No Vulnerabilities Found (Clean)
-    const isFixDisabled = !hasAudited || report.length === 0;
+    const isFixDisabled = !hasAudited || report.length === 0 || report.every(v => v.severity === 'ERROR');
 
+    // ── Render ─────────────────────────────────────────────────────────────────
     return (
         <div className="h-full flex flex-col min-h-0">
 
             {/* Header */}
             <div className="flex-none flex items-center justify-between mb-4 border-b border-gray-700 pb-4">
-                <h2 className="text-xl font-bold font-mono truncate max-w-md" title={file.file}>{file.file}</h2>
-                <div className="flex gap-2">
+                <div className="min-w-0">
+                    <h2 className="text-base font-bold font-mono truncate max-w-sm text-white" title={file.file || file.file_path}>
+                        {file.file || file.file_path}
+                    </h2>
+                    {hasAudited && (
+                        <p className="text-xs text-gray-500 mt-0.5">
+                            {report.filter(v => v.severity !== 'ERROR').length} finding(s) · {report.filter(v => ['CRITICAL', 'HIGH'].includes(v.severity)).length} critical/high
+                        </p>
+                    )}
+                </div>
 
-                    <button onClick={() => setActiveTab('audit')}
-                        className={`px-3 py-1.5 rounded text-sm flex items-center gap-2 transition-colors ${activeTab === 'audit' ? 'bg-sentry-accent text-sentry-dark font-bold' : 'bg-gray-800 text-gray-300 hover:bg-gray-700'}`}>
-                        <ShieldAlert size={16} /> Audit
+                <div className="flex gap-2 flex-none">
+                    {/* Audit tab */}
+                    <button
+                        id="tab-audit"
+                        onClick={() => setActiveTab('audit')}
+                        className={`px-3 py-1.5 rounded text-sm flex items-center gap-1.5 transition-colors
+              ${activeTab === 'audit' ? 'bg-sentry-accent text-sentry-dark font-bold' : 'bg-gray-800 text-gray-300 hover:bg-gray-700'}`}
+                    >
+                        <ShieldAlert size={15} /> Audit
                     </button>
 
-                    <button onClick={runFix} disabled={isFixDisabled}
-                        className={`px-3 py-1.5 rounded text-sm flex items-center gap-2 transition-colors ${activeTab === 'fix' ? 'bg-green-500 text-sentry-dark font-bold' : 'bg-gray-800 text-gray-300'} 
-            ${isFixDisabled ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-700'}`}>
-                        <Wrench size={16} /> Fix
+                    {/* Fix tab */}
+                    <button
+                        id="tab-fix"
+                        onClick={runFix}
+                        disabled={isFixDisabled}
+                        className={`px-3 py-1.5 rounded text-sm flex items-center gap-1.5 transition-colors
+              ${activeTab === 'fix' ? 'bg-green-500 text-sentry-dark font-bold' : 'bg-gray-800 text-gray-300'}
+              ${isFixDisabled ? 'opacity-40 cursor-not-allowed' : 'hover:bg-gray-700'}`}
+                    >
+                        <Wrench size={15} /> Fix
                     </button>
 
-                    <button onClick={() => setActiveTab('chat')}
-                        className={`px-3 py-1.5 rounded text-sm flex items-center gap-2 transition-colors ${activeTab === 'chat' ? 'bg-blue-500 text-white font-bold' : 'bg-gray-800 text-gray-300 hover:bg-gray-700'}`}>
-                        <MessageSquare size={16} /> Chat
+                    {/* Chat tab */}
+                    <button
+                        id="tab-chat"
+                        onClick={() => setActiveTab('chat')}
+                        className={`px-3 py-1.5 rounded text-sm flex items-center gap-1.5 transition-colors
+              ${activeTab === 'chat' ? 'bg-blue-500 text-white font-bold' : 'bg-gray-800 text-gray-300 hover:bg-gray-700'}`}
+                    >
+                        <MessageSquare size={15} /> Chat
                     </button>
-
                 </div>
             </div>
 
-            {/* --- TAB 1: AUDIT --- */}
+            {/* ── TAB 1: AUDIT ── */}
             {activeTab === 'audit' && (
-                <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar flex flex-col">
+                <div className="flex-1 overflow-y-auto pr-1 custom-scrollbar flex flex-col">
+
+                    {/* Pre-audit call-to-action */}
                     {!hasAudited && !loading && (
-                        <div className="flex-1 flex flex-col items-center justify-center text-gray-400">
-                            <ShieldAlert className="w-16 h-16 mb-4 opacity-30" />
-                            <p className="mb-6 text-lg">Ready to analyze <span className="font-mono text-white">{file.file}</span></p>
-                            <button onClick={runAudit} className="flex items-center gap-2 bg-sentry-accent text-sentry-dark px-6 py-3 rounded-lg font-bold hover:bg-white transition-all shadow-lg shadow-sentry-accent/20">
-                                <Play size={20} fill="currentColor" /> Run Audit
+                        <div className="flex-1 flex flex-col items-center justify-center text-gray-400 gap-4">
+                            <div className="p-5 rounded-2xl bg-gray-800/40 border border-gray-700">
+                                <ShieldAlert className="w-12 h-12 opacity-30 mx-auto" />
+                            </div>
+                            <p className="text-sm text-gray-500">
+                                Ready to analyze <span className="font-mono text-white">{file.file || file.file_path}</span>
+                            </p>
+                            <button
+                                id="run-audit-btn"
+                                onClick={runAudit}
+                                className="flex items-center gap-2 bg-sentry-accent text-sentry-dark px-6 py-3 rounded-xl
+                           font-bold hover:bg-white transition-all shadow-lg shadow-sentry-accent/20 text-sm"
+                            >
+                                <Play size={16} fill="currentColor" /> Run Security Audit
                             </button>
                         </div>
                     )}
-                    {loading && <div className="flex-1 flex flex-col items-center justify-center text-sentry-accent animate-pulse"><Loader2 className="w-10 h-10 animate-spin mb-4" /><p>Analyzing...</p></div>}
 
+                    {/* Loading / progress */}
+                    {loading && (
+                        <div className="flex-1 flex flex-col items-center justify-center gap-6 px-8">
+                            <Loader2 className="w-10 h-10 text-sentry-accent animate-spin" />
+                            <div className="w-full max-w-xs">
+                                <ProgressBar value={Math.round(progress)} label={progressLabel} />
+                            </div>
+                            <p className="text-xs text-gray-500">AI is reading every line of your code…</p>
+                        </div>
+                    )}
+
+                    {/* Results */}
                     {hasAudited && !loading && (
-                        <div className="space-y-4">
-                            {report.map((vuln, idx) => (
-                                <div key={idx} className="bg-gray-800/50 border border-red-500/30 p-4 rounded-lg">
-                                    <div className="flex justify-between items-start mb-2">
-                                        <span className="text-red-400 font-bold flex items-center gap-2"><ShieldAlert size={16} /> {vuln.type}</span>
-                                        <span className="text-xs bg-red-500/20 text-red-300 px-2 py-1 rounded">{vuln.severity}</span>
-                                    </div>
-                                    <p className="text-gray-300 text-sm mb-3">{vuln.description}</p>
-                                </div>
-                            ))}
-                            {report.length === 0 && (
-                                <div className="text-center text-green-400 py-10">
-                                    <CheckCircle className="w-20 h-20 mx-auto mb-4" />
-                                    <h3 className="text-xl font-bold">Secure & Clean</h3>
+                        <div className="space-y-3">
+                            {/* Clean state */}
+                            {report.filter(v => v.severity !== 'ERROR').length === 0 && applyState !== 'error' && (
+                                <div className="flex flex-col items-center text-green-400 py-10 gap-3">
+                                    <CheckCircle className="w-16 h-16" />
+                                    <h3 className="text-xl font-bold">No Vulnerabilities Found</h3>
+                                    <p className="text-gray-500 text-sm">This file looks secure.</p>
                                 </div>
                             )}
+
+                            {/* Apply success banner */}
+                            {applyState === 'applied' && downloadUrl && (
+                                <div className="flex items-center justify-between bg-green-900/20 border border-green-500/30 rounded-xl p-4">
+                                    <div className="flex items-center gap-2 text-green-400">
+                                        <CheckCircle size={18} />
+                                        <span className="text-sm font-medium">Fix applied! Re-verifying…</span>
+                                    </div>
+                                    <button
+                                        id="download-zip-btn"
+                                        onClick={handleDownloadZip}
+                                        className="flex items-center gap-1.5 bg-green-600 hover:bg-green-500 text-white px-3 py-1.5 rounded-lg text-xs font-bold transition-colors"
+                                    >
+                                        <Download size={13} /> Download Fixed ZIP
+                                    </button>
+                                </div>
+                            )}
+
+                            {/* Vulnerability cards */}
+                            {report.map((vuln, idx) => (
+                                <div
+                                    key={idx}
+                                    className={`rounded-xl border p-4 space-y-2 ${SEVERITY_STYLES[vuln.severity?.toUpperCase()] || SEVERITY_STYLES.INFO}`}
+                                >
+                                    <div className="flex items-start justify-between gap-2">
+                                        <div className="flex items-center gap-2 min-w-0">
+                                            <span className={`w-2 h-2 rounded-full flex-none mt-0.5 ${SEVERITY_DOT[vuln.severity?.toUpperCase()] || 'bg-gray-400'}`} />
+                                            <span className="font-bold text-sm truncate">{vuln.type}</span>
+                                        </div>
+                                        <SeverityBadge severity={vuln.severity} />
+                                    </div>
+
+                                    {vuln.line > 0 && (
+                                        <div className="flex items-center gap-1.5 text-xs opacity-70">
+                                            <ChevronRight size={12} />
+                                            <span className="font-mono">Line {vuln.line}</span>
+                                            {vuln.file && <span>· {vuln.file}</span>}
+                                            {vuln.cvss_score > 0 && <span>· CVSS {vuln.cvss_score.toFixed(1)}</span>}
+                                        </div>
+                                    )}
+
+                                    <p className="text-sm opacity-90 leading-relaxed">{vuln.description}</p>
+
+                                    {vuln.fix && (
+                                        <details className="group">
+                                            <summary className="text-xs cursor-pointer opacity-60 hover:opacity-100 transition-opacity flex items-center gap-1">
+                                                <Info size={11} /> Suggested fix
+                                            </summary>
+                                            <pre className="mt-2 text-xs font-mono bg-black/20 rounded p-2 whitespace-pre-wrap opacity-80">
+                                                {vuln.fix}
+                                            </pre>
+                                        </details>
+                                    )}
+                                </div>
+                            ))}
                         </div>
                     )}
                 </div>
             )}
 
-            {/* --- TAB 2: FIX --- */}
+            {/* ── TAB 2: FIX ── */}
             {activeTab === 'fix' && (
                 <div className="flex-1 flex flex-col min-h-0">
-                    {loading ? <div className="flex-1 flex items-center justify-center text-green-400 animate-pulse"><Wrench className="w-8 h-8 animate-spin mr-2" /> Generating Patch...</div> :
-                        fixedCode && (
-                            <div className="flex-1 bg-black rounded-lg border border-gray-700 overflow-hidden flex flex-col">
-                                <div className="bg-gray-800 px-4 py-2 text-xs flex justify-between items-center">
-                                    <span className="text-gray-400">Proposed Fix</span>
-                                    <button onClick={applyFix} className="flex items-center gap-2 bg-green-600 hover:bg-green-500 text-white px-3 py-1 rounded text-xs font-bold"><Save size={12} /> Apply & Verify</button>
-                                </div>
-                                <pre className="flex-1 p-4 overflow-auto text-sm font-mono text-green-100 custom-scrollbar">{fixedCode}</pre>
+                    {loading ? (
+                        <div className="flex-1 flex flex-col items-center justify-center gap-6 px-8">
+                            <Wrench className="w-8 h-8 text-green-400 animate-bounce" />
+                            <div className="w-full max-w-xs">
+                                <ProgressBar value={Math.round(progress)} label={progressLabel} />
                             </div>
-                        )}
+                            <p className="text-xs text-gray-500">Generating minimal surgical patch…</p>
+                        </div>
+                    ) : fixedCode && (
+                        <div className="flex-1 bg-[#0d1117] rounded-xl border border-gray-700 overflow-hidden flex flex-col">
+                            {/* Toolbar */}
+                            <div className="bg-gray-800 px-4 py-2.5 text-xs flex justify-between items-center border-b border-gray-700">
+                                <div className="flex items-center gap-2 text-gray-400">
+                                    <Wrench size={12} />
+                                    <span>Proposed Patch — review before applying</span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    {/* Download single file */}
+                                    <button
+                                        id="download-file-btn"
+                                        onClick={handleDownload}
+                                        className="flex items-center gap-1.5 bg-gray-700 hover:bg-gray-600 text-gray-200 px-2.5 py-1 rounded text-xs transition-colors"
+                                    >
+                                        <Download size={11} /> Download
+                                    </button>
+                                    {/* Apply */}
+                                    <button
+                                        id="apply-fix-btn"
+                                        onClick={applyFix}
+                                        disabled={applyState === 'applying'}
+                                        className="flex items-center gap-1.5 bg-green-600 hover:bg-green-500 text-white px-3 py-1 rounded text-xs font-bold transition-colors disabled:opacity-50"
+                                    >
+                                        {applyState === 'applying'
+                                            ? <><Loader2 size={11} className="animate-spin" /> Applying…</>
+                                            : <><Save size={11} /> Apply & Re-verify</>
+                                        }
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* Diff viewer */}
+                            <div className="flex-1 overflow-auto text-xs font-mono custom-scrollbar py-2">
+                                {fixedCode.split('\n').map((line, idx) => {
+                                    if (line.startsWith('-') && !line.startsWith('---'))
+                                        return <div key={idx} className="bg-red-900/30 text-red-400 px-4 py-0.5 whitespace-pre-wrap border-l-2 border-red-500">{line}</div>;
+                                    if (line.startsWith('+') && !line.startsWith('+++'))
+                                        return <div key={idx} className="bg-green-900/30 text-green-400 px-4 py-0.5 whitespace-pre-wrap border-l-2 border-green-500">{line}</div>;
+                                    if (line.startsWith('@@'))
+                                        return <div key={idx} className="bg-blue-900/20 text-blue-400 px-4 py-2 whitespace-pre-wrap font-bold mt-1">{line}</div>;
+                                    if (line.startsWith('---') || line.startsWith('+++'))
+                                        return <div key={idx} className="text-gray-300 font-bold px-4 py-1 whitespace-pre-wrap">{line}</div>;
+                                    return <div key={idx} className="text-gray-500 px-4 py-0.5 whitespace-pre-wrap border-l-2 border-transparent">{line}</div>;
+                                })}
+                            </div>
+                        </div>
+                    )}
                 </div>
             )}
 
-            {/* --- TAB 3: CHAT (New!) --- */}
+            {/* ── TAB 3: CHAT ── */}
             {activeTab === 'chat' && (
-                <div className="flex-1 flex flex-col min-h-0 bg-gray-900/50 rounded-lg border border-gray-700">
+                <div className="flex-1 flex flex-col min-h-0 bg-gray-900/50 rounded-xl border border-gray-700">
                     <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
                         {chatHistory.length === 0 && (
                             <div className="text-center text-gray-500 mt-10">
-                                <Bot className="w-12 h-12 mx-auto mb-3 opacity-50" />
-                                <p>Ask anything about <span className="font-mono text-gray-400">{file.file}</span></p>
+                                <Bot className="w-10 h-10 mx-auto mb-3 opacity-40" />
+                                <p className="text-sm">Ask anything about <span className="font-mono text-gray-400">{file.file || file.file_path}</span></p>
+                                <p className="text-xs mt-1 text-gray-600">e.g. "What are the most dangerous lines?" or "How do I fix the SQL injection?"</p>
                             </div>
                         )}
                         {chatHistory.map((msg, i) => (
                             <div key={i} className={`flex gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
-                                <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-none ${msg.role === 'user' ? 'bg-sentry-accent text-sentry-dark' : 'bg-blue-600 text-white'}`}>
-                                    {msg.role === 'user' ? <User size={16} /> : <Bot size={16} />}
+                                <div className={`w-7 h-7 rounded-full flex items-center justify-center flex-none text-xs ${msg.role === 'user' ? 'bg-sentry-accent text-sentry-dark' : 'bg-blue-600 text-white'}`}>
+                                    {msg.role === 'user' ? <User size={14} /> : <Bot size={14} />}
                                 </div>
-                                <div className={`p-3 rounded-lg text-sm max-w-[80%] ${msg.role === 'user' ? 'bg-gray-800 text-white' : 'bg-blue-900/30 text-blue-100'}`}>
+                                <div className={`p-3 rounded-xl text-sm max-w-[80%] leading-relaxed ${msg.role === 'user' ? 'bg-gray-800 text-white' : 'bg-blue-900/30 text-blue-100 border border-blue-800/30'}`}>
                                     {msg.text}
                                 </div>
                             </div>
                         ))}
-                        {loading && <div className="flex gap-3"><div className="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center"><Bot size={16} /></div><div className="text-gray-400 text-sm flex items-center">Thinking...</div></div>}
+                        {loading && (
+                            <div className="flex gap-3">
+                                <div className="w-7 h-7 bg-blue-600 rounded-full flex items-center justify-center"><Bot size={14} /></div>
+                                <div className="text-gray-400 text-sm flex items-center gap-2">
+                                    <Loader2 size={14} className="animate-spin" /> Thinking…
+                                </div>
+                            </div>
+                        )}
                         <div ref={chatEndRef} />
                     </div>
+
+                    {/* Input */}
                     <div className="p-3 border-t border-gray-700 flex gap-2">
                         <input
+                            id="chat-input"
                             type="text"
                             value={chatInput}
-                            onChange={(e) => setChatInput(e.target.value)}
-                            onKeyDown={(e) => e.key === 'Enter' && sendChat()}
-                            placeholder="Ask a security question..."
-                            className="flex-1 bg-gray-800 border-none rounded px-4 py-2 text-sm text-white focus:ring-1 focus:ring-sentry-accent outline-none"
+                            onChange={e => setChatInput(e.target.value)}
+                            onKeyDown={e => e.key === 'Enter' && !loading && sendChat()}
+                            placeholder="Ask a security question…"
+                            disabled={loading}
+                            className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-sm text-white
+                         placeholder-gray-500 focus:ring-1 focus:ring-sentry-accent focus:border-sentry-accent
+                         outline-none transition-all disabled:opacity-50"
                         />
-                        <button onClick={sendChat} disabled={loading} className="bg-sentry-accent text-sentry-dark p-2 rounded hover:bg-white transition-colors disabled:opacity-50">
-                            <Send size={18} />
+                        <button
+                            id="chat-send-btn"
+                            onClick={sendChat}
+                            disabled={loading || !chatInput.trim()}
+                            className="bg-sentry-accent text-sentry-dark p-2 rounded-lg hover:bg-white transition-colors disabled:opacity-40"
+                        >
+                            <Send size={16} />
                         </button>
                     </div>
                 </div>

@@ -10,6 +10,8 @@ from app.agent.auditor import SecurityAuditor
 from app.agent.patcher import SecurityPatcher
 from app.memory.knowledge_base import SecurityKnowledgeBase
 
+import ast
+
 
 # ============================================================================
 # SCAN WORKFLOW NODES
@@ -119,10 +121,12 @@ def load_organizational_memory(state: ScanState) -> ScanState:
         }
     except Exception as e:
         print(f"⚠️ [MEMORY] Failed to load memory: {e}")
+        existing_errors = list(state.get("errors", []))
+        existing_errors.append(f"Memory load failed: {str(e)}")
         return {
             **state,
             "organizational_memory": [],
-            "errors": [f"Memory load failed: {str(e)}"]
+            "errors": existing_errors
         }
 
 
@@ -192,6 +196,22 @@ def deep_audit_high_risk_files(state: ScanState) -> ScanState:
         "current_stage": "audited"
     }
 
+def validate_syntax(state: PatchState) -> PatchState:
+    """Checks if the LLM-generated code is valid Python."""
+    patched_code = state.get("patched_code", "")
+    
+    try:
+        ast.parse(patched_code)
+        # It's valid Python!
+        return state
+    except SyntaxError as e:
+        # It's broken. Add this error to the state so the Patcher can fix it.
+        return {
+            **state,
+            "current_stage": "syntax_error",
+            "error_feedback": f"Syntax Error on line {e.lineno}: {e.msg}. Please fix."
+        }
+
 
 def prioritize_vulnerabilities(state: ScanState) -> ScanState:
     """
@@ -201,10 +221,11 @@ def prioritize_vulnerabilities(state: ScanState) -> ScanState:
     """
     print("📊 [PRIORITIZE] Sorting vulnerabilities...")
     
+    _SEVERITY_RANK = {"CRITICAL": 5, "HIGH": 4, "MEDIUM": 3, "LOW": 2, "INFO": 1}
     sorted_vulns = sorted(
         state["vulnerabilities"],
         key=lambda v: (
-            {"CRITICAL": 5, "HIGH": 4, "MEDIUM": 3, "LOW": 2, "INFO": 1}[v.severity],
+            _SEVERITY_RANK.get(v.severity, 0),  # Unknown severities rank lowest
             -v.cvss_score
         ),
         reverse=True

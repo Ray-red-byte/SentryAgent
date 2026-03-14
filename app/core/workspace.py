@@ -1,11 +1,28 @@
 import os
+import re
 import shutil
 import uuid
 import zipfile
 from pathlib import Path
 from fastapi import UploadFile, HTTPException
 
-WORKSPACE_DIR = Path("temp_workspaces")
+WORKSPACE_DIR = Path(os.getenv("WORKSPACE_DIR", "temp_workspaces"))
+
+# Max upload size: 50 MB
+MAX_ZIP_SIZE_BYTES = 50 * 1024 * 1024
+
+# Valid UUID pattern to prevent session_id path injection
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+
+def _validate_session_id(session_id: str) -> None:
+    """Raise 400 if session_id is not a canonical UUID v4 string."""
+    if not _UUID_RE.match(session_id):
+        raise HTTPException(status_code=400, detail="Invalid session_id format.")
+
 
 class WorkspaceManager:
     def __init__(self):
@@ -22,31 +39,67 @@ class WorkspaceManager:
     async def save_and_extract_code(self, session_id: str, file: UploadFile):
         """
         Saves the uploaded ZIP file to the session folder and extracts it.
+
+        Security controls:
+        - Enforces maximum file size (50 MB).
+        - Prevents Zip Slip: all extracted members must resolve inside the session dir.
         """
+        _validate_session_id(session_id)
         session_path = WORKSPACE_DIR / session_id
         zip_path = session_path / "codebase.zip"
 
         try:
-            # 1. Save the ZIP file
+            # 1. Save the ZIP file with a size cap
+            bytes_written = 0
             with open(zip_path, "wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
+                chunk_size = 65536  # 64 KB chunks
+                while True:
+                    chunk = await file.read(chunk_size)
+                    if not chunk:
+                        break
+                    bytes_written += len(chunk)
+                    if bytes_written > MAX_ZIP_SIZE_BYTES:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=f"Upload exceeds the {MAX_ZIP_SIZE_BYTES // (1024*1024)} MB limit.",
+                        )
+                    buffer.write(chunk)
 
-            # 2. Extract the ZIP file
+            # 2. Open the ZIP and validate every member path (Zip Slip prevention)
+            resolved_session = session_path.resolve()
             with zipfile.ZipFile(zip_path, "r") as zip_ref:
+                for member in zip_ref.infolist():
+                    member_path = (session_path / member.filename).resolve()
+                    if not str(member_path).startswith(str(resolved_session)):
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Unsafe path in ZIP: {member.filename}",
+                        )
+                # Extract only after all paths have been validated
                 zip_ref.extractall(session_path)
 
             # 3. Clean up (remove the zip file to save space)
             os.remove(zip_path)
 
-            return {"status": "success", "files": [f.name for f in session_path.glob("**/*") if f.is_file()]}
+            return {
+                "status": "success",
+                "files": [
+                    f.name for f in session_path.glob("**/*") if f.is_file()
+                ],
+            }
 
-        except Exception as e:
-            # Cleanup on failure
+        except HTTPException:
             shutil.rmtree(session_path, ignore_errors=True)
-            raise HTTPException(status_code=500, detail=f"Failed to process upload: {str(e)}")
+            raise
+        except Exception:
+            shutil.rmtree(session_path, ignore_errors=True)
+            raise HTTPException(
+                status_code=500, detail="Failed to process upload."
+            )
 
     def get_workspace_path(self, session_id: str) -> Path:
         """Returns the valid path for a given session ID."""
+        _validate_session_id(session_id)
         path = WORKSPACE_DIR / session_id
         if not path.exists():
             raise HTTPException(status_code=404, detail="Session expired or not found.")
@@ -54,6 +107,7 @@ class WorkspaceManager:
 
     def cleanup_workspace(self, session_id: str):
         """Deletes the session data."""
+        _validate_session_id(session_id)
         path = WORKSPACE_DIR / session_id
         if path.exists():
             shutil.rmtree(path)

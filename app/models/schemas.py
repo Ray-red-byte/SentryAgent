@@ -26,3 +26,7 @@ class ApplyFixRequest(BaseModel):
     session_id: str
     file_path: str
     fixed_code: str
+    # Optional metadata for knowledge base learning
+    vuln_type: Optional[str] = "Security Fix"
+    severity: Optional[str] = "UNKNOWN"
+    cwe: Optional[str] = ""
