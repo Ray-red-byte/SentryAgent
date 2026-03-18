@@ -8,10 +8,11 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 logger = logging.getLogger(__name__)
 
 # The models the cache manager creates caches for — must match here exactly.
-_CACHE_MODEL = "models/gemini-1.5-flash"
+_CACHE_MODEL = "models/gemini-2.5-flash"
 
 # Preferred model order for non-cached calls
 _PREFERRED_MODELS = [
+    "models/gemini-2.5-flash",
     "models/gemini-2.0-flash",
     "models/gemini-1.5-flash-latest",
     "models/gemini-1.5-flash",
@@ -125,8 +126,8 @@ class GeminiClient:
         Selects the same preferred model as _auto_select_model().
         """
         api_key = self.api_key or os.getenv("GEMINI_API_KEY", "")
-        # Prefer gemini-2.0-flash as it's fast and supports tool-use well
-        model_name = "gemini-2.0-flash"
+        # Prefer gemini-2.5-flash as it's fast and supports tool-use well
+        model_name = "gemini-2.5-flash"
         return ChatGoogleGenerativeAI(
             model=model_name,
             google_api_key=api_key,

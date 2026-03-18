@@ -10,7 +10,8 @@ from app.core.context_builder import ContextAssembler
 from app.agent.gemini_client import GeminiClient
 from app.prompts.manager import PromptManager
 from app.memory.knowledge_base import SecurityKnowledgeBase
-from app.tools.patch_reason import run_pytest
+from app.tools.patch_reason import run_pytest, write_to_file
+from langchain_core.messages import HumanMessage
 
 logger = logging.getLogger(__name__)
 
@@ -49,15 +50,17 @@ def build_patcher_agent():
     Returns a compiled LangGraph graph (the subgraph).
     """
     llm = GeminiClient().get_model()
-    tools = [ast_check, run_pytest]
+    tools = [ast_check, run_pytest, write_to_file]
 
     return create_react_agent(
         model=llm,
         tools=tools,
-        state_modifier=(
+        prompt=(
             "You are a Senior Security Engineer. Your job is to fix security vulnerabilities "
-            "in Python code with minimal, surgical changes. After writing a fix, ALWAYS call "
-            "the ast_check tool to verify syntax before finishing. "
+            "in Python code with minimal, surgical changes. "
+            "Always use the write_to_file tool to save your work, then call ast_check or run_pytest to verify it. "
+            "If tests or syntax checks fail, update the file until they pass. "
+            "Once verified, you MUST return the final, correctly patched code block in your response."
             "If ast_check returns an error, fix the syntax and check again."
         ),
     )
@@ -92,31 +95,38 @@ class SecurityPatcher:
         lessons = self.historian.recall_for_file(file_path, code_snippet=original_code)
         lessons_block = self._format_lessons(lessons) if lessons else ""
 
+        context_prompt = ""
         if cache_name:
-            # FAST PATH — the whole repo is already cached; just ask to fix the target file
-            logger.info("Using Gemini cache for patcher: %s", cache_name)
-            prompt = self.prompts.get_prompt(
-                "patcher.default",
-                target_file=file_path,
-                context=f"(Entire repository is available in your context cache — find {file_path} there.)",
-            )
-            if lessons_block:
-                prompt = f"{lessons_block}\n\n{prompt}"
-            fixed_code = self.llm.analyze_with_cache(prompt, cache_name)
-
+            logger.info("Using Gemini cache context for patcher: %s", cache_name)
+            context_prompt = f"(Entire repository is available in your context cache — find {file_path} there.)\nWe are using ReAct agent for improved accuracy."
         else:
-            # SLOW PATH — build context manually
             logger.info("Cache miss. Building context manually for: %s", file_path)
-            context = self.assembler.build_context_for_file(file_path)
-            if lessons_block:
-                context = f"{lessons_block}\n\n{context}"
+            context_prompt = self.assembler.build_context_for_file(file_path)
+            
+        if lessons_block:
+            context_prompt = f"{lessons_block}\n\n{context_prompt}"
 
-            prompt = self.prompts.get_prompt(
-                "patcher.default",
-                target_file=file_path,
-                context=context,
-            )
-            fixed_code = self.llm.analyze(prompt)
+        prompt_str = self.prompts.get_prompt(
+            "patcher.default",
+            target_file=file_path,
+            context=context_prompt,
+        )
+
+        agent = build_patcher_agent()
+        logger.info("Invoking ReAct agent for self-correcting patching...")
+        result = agent.invoke({"messages": [HumanMessage(content=prompt_str)]})
+        fixed_code_raw = result["messages"][-1].content
+        if isinstance(fixed_code_raw, list):
+            # Gemini models sometimes return a list of text/tool-call blocks
+            parts = []
+            for block in fixed_code_raw:
+                if isinstance(block, dict) and "text" in block:
+                    parts.append(block["text"])
+                elif isinstance(block, str):
+                    parts.append(block)
+            fixed_code = "\n".join(parts)
+        else:
+            fixed_code = str(fixed_code_raw)
 
         # Clean up any markdown wrapping (Gemini sometimes adds ```python)
         fixed_code = self.clean_output(fixed_code)

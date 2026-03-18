@@ -50,7 +50,7 @@ class GeminiCacheManager:
         print(f"🚀 Uploading {file_count} files to Gemini Cache...")
         
         cache = caching.CachedContent.create(
-            model='models/gemini-1.5-flash', # Must match the model used in Client
+            model='models/gemini-2.5-flash', # Must match the model used in Client
             display_name=f"session_{session_id}",
             system_instruction="You are a Senior Security Engineer. You have access to the full codebase in this chat.",
             contents=[full_text],

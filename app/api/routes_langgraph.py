@@ -35,7 +35,7 @@ from app.workflows.graphs import (
 # --- Core Imports ---
 from app.core.workspace import WorkspaceManager
 from app.core.report_generator import ReportGenerator
-from app.core.utils import get_current_user
+from app.utils.auth import get_current_user
 
 # --- Models ---
 from app.models.audit_log import AuditLog

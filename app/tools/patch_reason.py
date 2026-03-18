@@ -33,3 +33,16 @@ def run_pytest(file_path: str):
 TODO
 More functions can be added here to analyze the patch
 """
+
+@tool
+def write_to_file(file_path: str, content: str):
+    """
+    Writes the provided content to the specified file_path.
+    Use this to save your patched code before running pytest on it.
+    """
+    try:
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(content)
+        return {"status": "SUCCESS", "message": f"Successfully wrote to {file_path}"}
+    except Exception as e:
+        return {"status": "ERROR", "message": str(e)}
