@@ -33,7 +33,7 @@ class GeminiCacheManager:
                         with open(path, "r", encoding="utf-8") as f:
                             content = f.read()
                             # Tagging the file so the model knows what it's looking at
-                            tagged_content = f"\n\n--- START FILE: {rel_path} ---\n{content}\n--- END FILE: {rel_path} ---\n"
+                            tagged_content = f"\n\n<user_code file=\"{rel_path}\">\n{content}\n</user_code>\n"
                             all_code_content.append(tagged_content)
                             file_count += 1
                     except Exception as e:

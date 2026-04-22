@@ -50,10 +50,15 @@ def generate_patch(state: PatchState) -> PatchState:
     root_dir  = state["root_dir"]
     full_path = f"{root_dir}/{file_path}"
 
-    print(f"🔧 [PATCH] ReAct agent starting on: {file_path}")
+    print(f"🔧 [PATCH] ReAct agent patch start on: {file_path}")
 
-    # Read the original code up-front for the review node
-    original_code = _read_source(full_path)
+    original_code = state.get("original_code")
+    if not original_code:
+        original_code = _read_source(full_path)
+    elif state.get("retry_count", 0) > 0:
+        # Revert the physical file back to the original state before the ReAct agent runs again
+        with open(full_path, "w", encoding="utf-8") as f:
+            f.write(original_code)
 
     # Build the initial message that drives the ReAct loop
     vulnerabilities = state.get("vulnerabilities", [])
@@ -63,6 +68,20 @@ def generate_patch(state: PatchState) -> PatchState:
         f"You must fix the security vulnerabilities listed below in the Python file.\n\n"
         f"**File (absolute path):** `{full_path}`\n\n"
         f"**Reported vulnerabilities:**\n{vuln_summary}\n\n"
+    )
+
+    # NEW: Inject feedback if this is a retry
+    retry_count = state.get("retry_count", 0)
+    review_feedback = state.get("review_feedback")
+    
+    if retry_count > 0 and review_feedback:
+        initial_message += (
+            f"⚠️ **PREVIOUS PATCH REJECTED.** The reviewer provided this feedback:\n"
+            f"{review_feedback}\n"
+            f"Please read the original file again, fix the logic according to the feedback, and generate a new patch.\n\n"
+        )
+
+    initial_message += (
         f"Follow your strict workflow: search_owasp_guidelines → read_file → "
         f"write_code_patch → check_syntax → run_security_scanner.\n"
         f"Return the complete patched source in a ```python ... ``` block when done."
@@ -173,11 +192,6 @@ def review_patch_node(state: PatchState) -> dict:
         "review_feedback": review_result.get("feedback", "No feedback provided."),
         "retry_count": attempt,
     }
-
-
-# ============================================================================
-# Private helpers
-# ============================================================================
 
 def _read_source(full_path: str) -> str:
     """Read source safely; return empty string on failure."""

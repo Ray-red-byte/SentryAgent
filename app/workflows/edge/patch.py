@@ -15,3 +15,8 @@ def is_patch_approved(state: PatchState) -> str:
         return "approved"
 
     return "rejected"
+
+def route_after_patch(state: PatchState) -> str:
+    if state.get("current_stage") == "error":
+        return "error"
+    return "review"

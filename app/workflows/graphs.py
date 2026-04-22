@@ -4,7 +4,7 @@ LangGraph workflow definitions for SentryAgent.
 This module defines the state machines that orchestrate the security scanning process.
 """
 from langgraph.graph import StateGraph, END
-from app.workflows.edge.patch import is_patch_approved
+from app.workflows.edge.patch import is_patch_approved, route_after_patch
 from app.workflows.edge.scan import should_deep_audit, should_prioritize
 from app.workflows.node.patch import review_patch_node
 from app.workflows.state import ScanState, AuditState, PatchState, ChatState
@@ -19,12 +19,6 @@ from app.workflows.node.scan import (
 from app.workflows.node.audit import audit_single_file
 from app.workflows.node.chat import run_chat_node
 from app.workflows.node.patch import generate_patch, save_patch_to_memory
-
-
-
-# ============================================================================
-# FULL SCAN WORKFLOW
-# ============================================================================
 
 def create_scan_workflow():
     """
@@ -106,7 +100,15 @@ def create_patch_workflow():
     workflow.add_node("save_memory", save_patch_to_memory)
     
     workflow.set_entry_point("patch")
-    workflow.add_edge("patch", "review")
+    
+    workflow.add_conditional_edges(
+        "patch",
+        route_after_patch,
+        {
+            "review": "review",
+            "error": END  # Short-circuit the workflow on hard failures
+        }
+    )
     
     # ADD A CONDITIONAL LOOP FOR REFLECTION
     workflow.add_conditional_edges(
