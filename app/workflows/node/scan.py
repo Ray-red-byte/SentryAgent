@@ -3,21 +3,14 @@ Workflow nodes for the security scanning pipeline.
 Each node is a pure function that takes state and returns updated state.
 """
 from pathlib import Path
-from app.workflows.state import ScanState, ScanResult, Vulnerability, AuditState, PatchState, ChatState
-from app.tools.parser.python_parser import PythonParser
+from app.workflows.state import ScanState, ScanResult, Vulnerability
+from app.core.parser.python_parser import PythonParser
 from app.agent.auditor import SecurityAuditor
-from app.agent.patcher import SecurityPatcher
 from app.memory.knowledge_base import SecurityKnowledgeBase
 
-import ast
 import logging
 
 logger = logging.getLogger(__name__)
-
-
-# ============================================================================
-# SCAN WORKFLOW NODES
-# ============================================================================
 
 def discover_files(state: ScanState) -> ScanState:
     """
@@ -240,6 +233,7 @@ def prioritize_vulnerabilities(state: ScanState) -> ScanState:
     }
 
 
+
 def generate_report(state: ScanState) -> ScanState:
     """
     Node 6: Generate final scan report.
@@ -290,182 +284,3 @@ def generate_report(state: ScanState) -> ScanState:
         },
         "current_stage": "complete"
     }
-
-
-# ============================================================================
-# AUDIT WORKFLOW NODES (Single File)
-# ============================================================================
-
-def audit_single_file(state: AuditState) -> AuditState:
-    """Audit a single file for vulnerabilities."""
-    print(f"🕵️ [AUDIT] Analyzing {state['file_path']}...")
-
-    try:
-        auditor = SecurityAuditor(root_dir=state["root_dir"])
-
-        # Use cache if available
-        if state.get("cache_name"):
-            report = auditor.audit_file_with_cache(
-                state["file_path"],
-                state["cache_name"]
-            )
-        else:
-            report = auditor.audit_file(state["file_path"])
-
-        # Convert to Vulnerability objects
-        vulnerabilities = []
-        for vuln_dict in report:
-            if isinstance(vuln_dict, dict) and vuln_dict.get("severity") != "ERROR":
-                vuln = Vulnerability(
-                    type=vuln_dict.get("type", "Unknown"),
-                    severity=vuln_dict.get("severity", "INFO"),
-                    file=state["file_path"],
-                    line=vuln_dict.get("line", 0),
-                    description=vuln_dict.get("description", ""),
-                    fix_suggestion=vuln_dict.get("fix", "")
-                )
-                vulnerabilities.append(vuln)
-
-        print(f"✅ [AUDIT] Found {len(vulnerabilities)} issues")
-
-        return {
-            **state,
-            "vulnerabilities": vulnerabilities,
-            "audit_report": report,
-            "current_stage": "complete"
-        }
-
-    except Exception as e:
-        print(f"❌ [AUDIT] Error: {e}")
-        return {
-            **state,
-            "current_stage": "error",
-            "error": str(e)
-        }
-
-
-# ============================================================================
-# CHAT WORKFLOW NODE
-# ============================================================================
-
-def run_chat_node(state: ChatState) -> ChatState:
-    """
-    Chat workflow node: answers developer questions about a specific file.
-    Uses the Gemini cache (fast path) when available, otherwise reads the file
-    directly (slow path).
-    """
-    print(f"💬 [CHAT] Processing query for {state['file_path']}...")
-
-    try:
-        auditor = SecurityAuditor(root_dir=state["root_dir"])
-
-        # Build the full path for the slow-path fallback
-        from pathlib import Path as _Path
-        full_path = str(_Path(state["root_dir"]) / state["file_path"])
-
-        response = auditor.chat_with_file(
-            file_path=state["file_path"],
-            query=state["query"],
-            cache_name=state.get("cache_name"),
-            full_path=full_path,
-        )
-
-        print("✅ [CHAT] Response generated")
-
-        return {
-            **state,
-            "response": response,
-            "current_stage": "complete"
-        }
-
-    except Exception as e:
-        print(f"❌ [CHAT] Error: {e}")
-        return {
-            **state,
-            "response": f"Error: {str(e)}",
-            "current_stage": "error",
-            "error": str(e)
-        }
-
-
-# ============================================================================
-# PATCH WORKFLOW NODES
-# ============================================================================
-
-def generate_patch(state: PatchState) -> PatchState:
-    """Generate security patches for vulnerabilities."""
-    print(f"🔧 [PATCH] Generating fixes for {state['file_path']}...")
-
-    try:
-        patcher = SecurityPatcher(root_dir=state["root_dir"])
-
-        # Generate patch
-        patched_code = patcher.patch_file(
-            state["file_path"],
-            cache_name=state.get("cache_name")
-        )
-
-        # Read original code for the review step
-        original_code = patcher._read_file(state["file_path"])
-
-        print("✅ [PATCH] Patch generated successfully")
-
-        return {
-            **state,
-            "original_code": original_code,
-            "patched_code": patched_code,
-            "current_stage": "patching"
-        }
-
-    except Exception as e:
-        print(f"❌ [PATCH] Error: {e}")
-        return {
-            **state,
-            "current_stage": "error",
-            "error": str(e)
-        }
-
-
-def validate_syntax(state: PatchState) -> PatchState:
-    """Checks if the LLM-generated code is valid Python."""
-    patched_code = state.get("patched_code", "")
-
-    try:
-        ast.parse(patched_code)
-        # It's valid Python!
-        return state
-    except SyntaxError as e:
-        # It's broken. Add this error as review_feedback so the review node sees it.
-        return {
-            **state,
-            "is_approved": False,
-            "review_feedback": f"Syntax Error on line {e.lineno}: {e.msg}. Please fix before re-reviewing.",
-        }
-
-
-def save_patch_to_memory(state: PatchState) -> PatchState:
-    """Save the patch to organizational memory for future learning."""
-    print("🧠 [MEMORY] Saving patch to knowledge base...")
-
-    try:
-        kb = SecurityKnowledgeBase()
-        kb.learn_fix(
-            vuln_type="Security Patch",
-            description=f"Patch for {state['file_path']}",
-            fix_code=state["patched_code"][:1000]  # Truncate for storage
-        )
-
-        print("✅ [MEMORY] Patch saved to knowledge base")
-
-        return {
-            **state,
-            "current_stage": "complete"
-        }
-
-    except Exception as e:
-        print(f"⚠️ [MEMORY] Failed to save patch: {e}")
-        # Non-critical error, still mark as complete
-        return {
-            **state,
-            "current_stage": "complete"
-        }

@@ -4,24 +4,22 @@ LangGraph workflow definitions for SentryAgent.
 This module defines the state machines that orchestrate the security scanning process.
 """
 from langgraph.graph import StateGraph, END
-from app.workflows.decision import is_patch_approved, should_deep_audit, should_prioritize, review_patch_node
+from app.workflows.edge.patch import is_patch_approved
+from app.workflows.edge.scan import should_deep_audit, should_prioritize
+from app.workflows.node.patch import review_patch_node
 from app.workflows.state import ScanState, AuditState, PatchState, ChatState
-from app.workflows.nodes import (
-    # Scan workflow nodes
+from app.workflows.node.scan import (
     discover_files,
     parse_and_scan,
     load_organizational_memory,
     deep_audit_high_risk_files,
     prioritize_vulnerabilities,
     generate_report,
-    # Audit workflow nodes
-    audit_single_file,
-    # Chat workflow nodes
-    run_chat_node,
-    # Patch workflow nodes
-    generate_patch,
-    save_patch_to_memory
 )
+from app.workflows.node.audit import audit_single_file
+from app.workflows.node.chat import run_chat_node
+from app.workflows.node.patch import generate_patch, save_patch_to_memory
+
 
 
 # ============================================================================

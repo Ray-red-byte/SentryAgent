@@ -39,7 +39,17 @@ class SecurityAuditor:
         logger.info("Auditor checking %s via cache...", file_path)
 
         # 1. Inject past lessons into the prompt so the LLM knows what to re-check
-        past_lessons = self.historian.recall_relevant_lessons(file_path)
+        import os
+        code_snippet = ""
+        full_path = os.path.join(self.assembler.root_dir, file_path)
+        if os.path.exists(full_path):
+            try:
+                with open(full_path, "r", encoding="utf-8") as f:
+                    code_snippet = f.read(1000)
+            except Exception as e:
+                logger.warning(f"Could not read snippet for knowledge recall: {e}")
+
+        past_lessons = self.historian.recall_for_file(file_path, code_snippet=code_snippet)
         lessons_block = self._format_lessons(past_lessons)
 
         base_prompt = self.prompts.get_prompt(
@@ -99,7 +109,7 @@ class SecurityAuditor:
 
         if cache_name:
             # FAST PATH: cached context already contains the file
-            return self.llm.generate_content_with_cache(prompt, cache_name)
+            return self.llm.analyze_with_cache(prompt, cache_name)
 
         # SLOW PATH: read the file and append its content to the prompt
         if not full_path:
@@ -112,7 +122,8 @@ class SecurityAuditor:
             return self.llm.analyze(final_prompt)
         except OSError as e:
             logger.error("Could not read %s: %s", full_path, e)
-            return f"Error: Could not read the file for analysis."
+            return "Error: Could not read the file for analysis."
+
 
     # ------------------------------------------------------------------
     # JSON PARSING — robust against Gemini's varied formatting habits
@@ -175,10 +186,6 @@ class SecurityAuditor:
             normalised.append(vuln)
 
         return normalised
-
-    # ------------------------------------------------------------------
-    # PRIVATE HELPERS
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _strip_to_json(text: str) -> str:

@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.routes_langgraph import router as api_router_v2
+from app.api.routes import router as api_router_v2
 from app.databases.postgres import engine, Base
 import os
 

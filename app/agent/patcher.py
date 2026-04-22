@@ -1,69 +1,24 @@
+"""
+app/agent/patcher.py
+
+SecurityPatcher — plain LLM-based patching agent.
+
+The ReAct subgraph (create_react_agent) lives in:
+    app/agent/subgraph/patcher_subgraph.py
+"""
+
 import re
 import ast
 import json
 import logging
 from pathlib import Path
-from langchain_core.tools import tool
-from langgraph.prebuilt import create_react_agent
 
 from app.core.context_builder import ContextAssembler
 from app.agent.gemini_client import GeminiClient
 from app.prompts.manager import PromptManager
 from app.memory.knowledge_base import SecurityKnowledgeBase
-from app.tools.patch_reason import run_pytest, write_to_file
-from langchain_core.messages import HumanMessage
 
 logger = logging.getLogger(__name__)
-
-
-# ============================================================================
-# LANGCHAIN TOOLS — used by the patcher ReAct subgraph
-# ============================================================================
-
-@tool
-def ast_check(code: str) -> dict:
-    """
-    Validates that a Python code string has valid syntax using the AST parser.
-    Returns a dict with 'valid' (bool) and optionally 'error' (str).
-    Always call this tool after generating a patch to verify syntax before submitting.
-    """
-    try:
-        ast.parse(code)
-        return {"valid": True, "message": "Syntax is valid Python."}
-    except SyntaxError as e:
-        return {
-            "valid": False,
-            "error": f"SyntaxError on line {e.lineno}: {e.msg}",
-        }
-
-
-# ============================================================================
-# PATCHER SUBGRAPH — ReAct agent that generates + self-verifies patches
-# ============================================================================
-
-def build_patcher_agent():
-    """
-    Builds a LangGraph ReAct agent for generating and verifying security patches.
-    The agent has two tools:
-      - ast_check: validates Python syntax of generated code
-      - run_pytest: runs the test suite against the patched file
-    Returns a compiled LangGraph graph (the subgraph).
-    """
-    llm = GeminiClient().get_model()
-    tools = [ast_check, run_pytest, write_to_file]
-
-    return create_react_agent(
-        model=llm,
-        tools=tools,
-        prompt=(
-            "You are a Senior Security Engineer. Your job is to fix security vulnerabilities "
-            "in Python code with minimal, surgical changes. "
-            "Always use the write_to_file tool to save your work, then call ast_check or run_pytest to verify it. "
-            "If tests or syntax checks fail, update the file until they pass. "
-            "Once verified, you MUST return the final, correctly patched code block in your response."
-            "If ast_check returns an error, fix the syntax and check again."
-        ),
-    )
 
 
 # ============================================================================
@@ -80,7 +35,8 @@ class SecurityPatcher:
 
     def patch_file(self, file_path: str, cache_name: str = None) -> str:
         """
-        Generates a security fix for the given file.
+        Generates a security fix for the given file using a direct LLM call.
+
         - FAST PATH: Uses Gemini Context Cache if cache_name is provided.
         - SLOW PATH: Manually builds context if no cache.
 
@@ -98,11 +54,13 @@ class SecurityPatcher:
         context_prompt = ""
         if cache_name:
             logger.info("Using Gemini cache context for patcher: %s", cache_name)
-            context_prompt = f"(Entire repository is available in your context cache — find {file_path} there.)\nWe are using ReAct agent for improved accuracy."
+            context_prompt = (
+                f"(Entire repository is available in your context cache — find {file_path} there.)"
+            )
         else:
             logger.info("Cache miss. Building context manually for: %s", file_path)
             context_prompt = self.assembler.build_context_for_file(file_path)
-            
+
         if lessons_block:
             context_prompt = f"{lessons_block}\n\n{context_prompt}"
 
@@ -112,28 +70,17 @@ class SecurityPatcher:
             context=context_prompt,
         )
 
-        agent = build_patcher_agent()
-        logger.info("Invoking ReAct agent for self-correcting patching...")
-        result = agent.invoke({"messages": [HumanMessage(content=prompt_str)]})
-        fixed_code_raw = result["messages"][-1].content
-        if isinstance(fixed_code_raw, list):
-            # Gemini models sometimes return a list of text/tool-call blocks
-            parts = []
-            for block in fixed_code_raw:
-                if isinstance(block, dict) and "text" in block:
-                    parts.append(block["text"])
-                elif isinstance(block, str):
-                    parts.append(block)
-            fixed_code = "\n".join(parts)
-        else:
-            fixed_code = str(fixed_code_raw)
+        logger.info("Invoking LLM for patching: %s", file_path)
+        fixed_code_raw = self.llm.analyze(prompt_str)
 
         # Clean up any markdown wrapping (Gemini sometimes adds ```python)
-        fixed_code = self.clean_output(fixed_code)
+        fixed_code = self.clean_output(fixed_code_raw)
 
         # Safety net: if the LLM returned nothing useful, return the original unchanged
         if not fixed_code or len(fixed_code.strip()) < 10:
-            logger.warning("Patcher returned empty/trivial output for %s — using original.", file_path)
+            logger.warning(
+                "Patcher returned empty/trivial output for %s — using original.", file_path
+            )
             return original_code
 
         logger.info("Patcher generated %d chars for %s", len(fixed_code), file_path)
@@ -173,8 +120,15 @@ class SecurityPatcher:
             # Default to approved to avoid infinite retry loops
             return {
                 "is_approved": True,
-                "feedback": f"Review could not parse AI output (auto-approved). Raw: {response_text[:200]}",
+                "feedback": (
+                    f"Review could not parse AI output (auto-approved). "
+                    f"Raw: {response_text[:200]}"
+                ),
             }
+
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
 
     def _read_file(self, file_path: str) -> str:
         """Read the target file from the workspace root."""

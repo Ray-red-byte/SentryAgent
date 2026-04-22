@@ -9,7 +9,6 @@ security_scheme = HTTPBearer()
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "change-me-in-production-use-a-long-random-string")
 ALGORITHM = "HS256"
 
-
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Security(security_scheme),
 ):

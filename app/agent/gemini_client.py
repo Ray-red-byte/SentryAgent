@@ -74,11 +74,7 @@ class GeminiClient:
                 "models/gemini-pro",
                 generation_config=_JSON_GENERATION_CONFIG,
             )
-
-    # ------------------------------------------------------------------
-    # PUBLIC METHODS
-    # ------------------------------------------------------------------
-
+            
     def analyze(self, prompt: str) -> str:
         """
         Sends a prompt to Gemini and returns the text response.

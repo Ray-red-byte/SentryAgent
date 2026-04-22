@@ -2,7 +2,7 @@ import os
 import networkx as nx
 from pathlib import Path
 from tree_sitter import Language, Parser
-from app.tools.parser.python_parser import PythonParser
+from app.core.parser.python_parser import PythonParser
 
 class DependencyMapper(PythonParser):
     def __init__(self, root_dir: str):

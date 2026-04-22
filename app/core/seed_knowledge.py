@@ -11,12 +11,12 @@ Run once:
 import os
 import uuid
 import chromadb
+from app.knowledge.security import KNOWLEDGE_ENTRIES
 
-COLLECTION_NAME = "sentry_knowledge_base"
+COLLECTION_NAME = "security_knowledge_base"
 
 # ---------------------------------------------------------------------------
 # Authoritative vulnerability knowledge entries
-# Each entry: (vuln_type, cwe_id, description, detection_pattern, fix_pattern)
 # ---------------------------------------------------------------------------
 
 def seed(force: bool = False):
