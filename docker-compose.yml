@@ -10,6 +10,8 @@ services:
     volumes:
       - ./app:/app/app
       - sentry_workspaces:/app/temp_workspaces
+      - chroma_model_cache:/root/.cache
+
     env_file:
       - .env
     depends_on:
@@ -19,7 +21,7 @@ services:
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-exclude "temp_workspaces/*"
+    command: sh -c "python -m app.core.seed_knowledge && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir app --reload-exclude '*.pyc'"
 
   # --- REDIS (New) ---
   redis:
@@ -70,3 +72,4 @@ volumes:
   sentry_workspaces:
   postgres_data:
   redis_data: # <--- New Volume
+  chroma_model_cache:

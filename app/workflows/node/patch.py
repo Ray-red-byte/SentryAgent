@@ -1,0 +1,249 @@
+"""
+app/workflows/node/patch.py
+
+LangGraph workflow nodes for the security patching pipeline.
+
+Each node is a pure state-transition function — no agent or subgraph logic
+lives here. The heavy lifting is delegated to the patcher_graph subgraph.
+"""
+
+import re
+import logging
+from app.workflows.state import PatchState
+from app.memory.knowledge_base import SecurityKnowledgeBase
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Lazy import helper — avoids loading the LLM at module import time so that
+# other workflow nodes (scan, audit, …) don't pay the initialisation cost.
+# ---------------------------------------------------------------------------
+
+_patcher_graph = None
+
+def _get_patcher_graph():
+    global _patcher_graph
+    if _patcher_graph is None:
+        from app.workflows.subgraph.patcher_subgraph import patcher_graph
+        _patcher_graph = patcher_graph
+    return _patcher_graph
+
+
+# ============================================================================
+# NODE: generate_patch
+# ============================================================================
+
+def generate_patch(state: PatchState) -> PatchState:
+    """
+    Invokes the ReAct patcher subgraph to autonomously:
+      1. Research the correct fix via OWASP knowledge base
+      2. Read the vulnerable file
+      3. Apply a surgical patch
+      4. Verify syntax
+      5. Run a security scanner
+    …looping until all checks pass.
+
+    Updates PatchState with original_code, patched_code, and current_stage.
+    """
+    file_path = state["file_path"]
+    root_dir  = state["root_dir"]
+    full_path = f"{root_dir}/{file_path}"
+
+    print(f"🔧 [PATCH] ReAct agent starting on: {file_path}")
+
+    # Read the original code up-front for the review node
+    original_code = _read_source(full_path)
+
+    # Build the initial message that drives the ReAct loop
+    vulnerabilities = state.get("vulnerabilities", [])
+    vuln_summary = _format_vulnerabilities(vulnerabilities)
+
+    initial_message = (
+        f"You must fix the security vulnerabilities listed below in the Python file.\n\n"
+        f"**File (absolute path):** `{full_path}`\n\n"
+        f"**Reported vulnerabilities:**\n{vuln_summary}\n\n"
+        f"Follow your strict workflow: search_owasp_guidelines → read_file → "
+        f"write_code_patch → check_syntax → run_security_scanner.\n"
+        f"Return the complete patched source in a ```python ... ``` block when done."
+    )
+
+    try:
+        graph = _get_patcher_graph()
+        result = graph.invoke({"messages": [("user", initial_message)]})
+
+        # Extract the agent's final text message
+        final_message = result["messages"][-1]
+        raw_content   = _extract_content(final_message)
+
+        # Pull the code block out of the agent's response
+        patched_code = _extract_code_block(raw_content)
+
+        # Safety net: if no code block was returned, fall back to the raw response
+        if not patched_code or len(patched_code.strip()) < 10:
+            logger.warning(
+                "[PATCH] Agent returned no parseable code block for %s — using raw response.",
+                file_path,
+            )
+            patched_code = raw_content.strip() or original_code
+
+        print(f"✅ [PATCH] ReAct agent finished. Patch size: {len(patched_code)} chars.")
+
+        return {
+            **state,
+            "original_code": original_code,
+            "patched_code": patched_code,
+            "current_stage": "patching",
+        }
+
+    except Exception as e:
+        logger.error("[PATCH] ReAct agent failed for %s: %s", file_path, e)
+        print(f"❌ [PATCH] ReAct agent error: {e}")
+        return {
+            **state,
+            "original_code": original_code,
+            "patched_code": original_code,  # safe fallback — return unchanged code
+            "current_stage": "error",
+            "error": str(e),
+        }
+
+
+# ============================================================================
+# NODE: save_patch_to_memory
+# ============================================================================
+
+def save_patch_to_memory(state: PatchState) -> PatchState:
+    """Save the approved patch to organisational memory for future learning."""
+    print("🧠 [MEMORY] Saving patch to knowledge base...")
+
+    try:
+        kb = SecurityKnowledgeBase()
+        kb.learn_fix(
+            vuln_type="Security Patch",
+            description=f"ReAct patch for {state['file_path']}",
+            fix_code=state["patched_code"][:1000],
+            file_path=state["file_path"],
+        )
+        print("✅ [MEMORY] Patch saved to knowledge base")
+    except Exception as e:
+        # Non-critical — log and continue
+        logger.warning("[MEMORY] Failed to save patch: %s", e)
+        print(f"⚠️  [MEMORY] Failed to save patch: {e}")
+
+    return {**state, "current_stage": "complete"}
+
+
+# ============================================================================
+# NODE: review_patch_node
+# ============================================================================
+
+def review_patch_node(state: PatchState) -> dict:
+    """
+    LangGraph node that critically reviews the generated patch.
+    Returns partial state updates consumed by the is_patch_approved edge.
+    """
+    import json
+    from app.agent.patcher import SecurityPatcher
+
+    attempt = state.get("retry_count", 0) + 1
+    print(f"🧐 [REVIEW] Reviewing patch for {state['file_path']} (attempt {attempt})")
+
+    if not state.get("patched_code"):
+        return {
+            "is_approved": False,
+            "review_feedback": "No patch was generated.",
+            "retry_count": attempt,
+        }
+
+    patcher = SecurityPatcher(root_dir=state.get("root_dir", "app"))
+    review_result = patcher.review_patch(
+        original_code=state["original_code"],
+        patched_code=state["patched_code"],
+        vulnerabilities=state["vulnerabilities"],
+    )
+
+    # Defensive normalisaton
+    if isinstance(review_result, list):
+        review_result = review_result[0] if review_result else {}
+    if not isinstance(review_result, dict):
+        review_result = {"is_approved": True, "feedback": "Unexpected reviewer output — auto-approved."}
+
+    return {
+        "is_approved": review_result.get("is_approved", True),
+        "review_feedback": review_result.get("feedback", "No feedback provided."),
+        "retry_count": attempt,
+    }
+
+
+# ============================================================================
+# Private helpers
+# ============================================================================
+
+def _read_source(full_path: str) -> str:
+    """Read source safely; return empty string on failure."""
+    try:
+        with open(full_path, "r", encoding="utf-8") as f:
+            return f.read()
+    except OSError as e:
+        logger.warning("[PATCH] Could not read %s: %s", full_path, e)
+        return ""
+
+
+def _format_vulnerabilities(vulnerabilities: list) -> str:
+    """Format the vulnerability list into a concise numbered string."""
+    if not vulnerabilities:
+        return "No specific vulnerabilities listed — perform a general security hardening pass."
+
+    lines = []
+    for i, v in enumerate(vulnerabilities, 1):
+        if hasattr(v, "__dict__"):
+            # Dataclass / TypedDict object
+            severity = getattr(v, "severity", "?")
+            vtype    = getattr(v, "type", "?")
+            line_no  = getattr(v, "line", "?")
+            desc     = getattr(v, "description", "")
+        elif isinstance(v, dict):
+            severity = v.get("severity", "?")
+            vtype    = v.get("type", "?")
+            line_no  = v.get("line", "?")
+            desc     = v.get("description", "")
+        else:
+            lines.append(f"{i}. {v}")
+            continue
+
+        lines.append(f"{i}. [{severity}] {vtype} (line {line_no}): {desc}")
+
+    return "\n".join(lines)
+
+
+def _extract_content(message) -> str:
+    """Pull plain text out of a LangChain message object or raw string."""
+    content = getattr(message, "content", message)
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict) and "text" in block:
+                parts.append(block["text"])
+            elif isinstance(block, str):
+                parts.append(block)
+        return "\n".join(parts)
+    return str(content)
+
+
+def _extract_code_block(text: str) -> str:
+    """
+    Extract the first ```python ... ``` (or ``` ... ```) fenced code block.
+    Falls back to stripping bare fences if no language tag is present.
+    """
+    # Try explicit ```python block first
+    match = re.search(r"```python\s*\n(.*?)```", text, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+
+    # Generic ``` block
+    match = re.search(r"```\s*\n(.*?)```", text, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+
+    # No fence found — return the whole text for the caller to decide
+    return ""

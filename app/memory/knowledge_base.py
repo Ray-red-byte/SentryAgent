@@ -1,57 +1,130 @@
-import chromadb
+"""
+app/memory/knowledge_base.py
+
+SecurityKnowledgeBase — long-term organisational memory backed by ChromaDB.
+Two responsibilities:
+ 1. recall_relevant_lessons() — RAG retrieval for audit & patch prompts
+ 2. learn_fix()               — store successful vulnerability→fix pairs
+"""
 import os
 import uuid
+import logging
 import datetime
+import chromadb
+
+logger = logging.getLogger(__name__)
+
+COLLECTION_NAME = "security_knowledge_base"
+
 
 class SecurityKnowledgeBase:
     def __init__(self):
-        # Connect to the same ChromaDB instance
         host = os.getenv("CHROMA_HOST", "localhost")
         port = 8000 if host == "chromadb_server" else 8001
-        self.client = chromadb.HttpClient(host=host, port=port)
-        
-        # New Collection specifically for "Learned Patterns"
-        self.collection = self.client.get_or_create_collection(name="sentry_knowledge_base")
-
-    def learn_fix(self, vuln_type: str, description: str, fix_code: str):
-        """
-        Saves a 'Vulnerability -> Fix' pair to long-term memory.
-        """
-        doc_id = str(uuid.uuid4())
-        
-        # We format the document so it's easy for the AI to understand later
-        document_text = f"""
-        [KNOWN VULNERABILITY TYPE]: {vuln_type}
-        [DESCRIPTION]: {description}
-        [SUCCESSFUL FIX PATTERN]:
-        {fix_code}
-        """
-        
-        self.collection.add(
-            ids=[doc_id],
-            documents=[document_text],
-            metadatas=[{
-                "type": vuln_type,
-                "timestamp": str(datetime.datetime.now())
-            }]
-        )
-        print(f"🧠 [Historian] Memorized new fix for: {vuln_type}")
-
-    def recall_relevant_lessons(self, query_text: str, n_results=2):
-        """
-        Finds past lessons relevant to the current file/code.
-        """
         try:
-            results = self.collection.query(
-                query_texts=[query_text], 
-                n_results=n_results
+            self.client = chromadb.HttpClient(host=host, port=port)
+            self.collection = self.client.get_or_create_collection(
+                name=COLLECTION_NAME,
+                metadata={"description": "SentryAgent cybersecurity knowledge base"},
             )
-            
-            lessons = []
-            if results['documents']:
-                for doc in results['documents'][0]:
-                    lessons.append(doc)
-            return lessons
+            logger.info("ChromaDB connected (%s:%s) — %d entries", host, port, self.collection.count())
         except Exception as e:
-            print(f"⚠️ [Historian] Memory lookup failed: {e}")
+            logger.warning("ChromaDB unavailable (%s). Knowledge base disabled.", e)
+            self.collection = None
+
+    # ------------------------------------------------------------------
+    # RECALL — used by auditor and patcher to enrich AI prompts
+    # ------------------------------------------------------------------
+
+    def recall_relevant_lessons(self, query_text: str, n_results: int = 3) -> list[str]:
+        """
+        Semantic search against the knowledge base.
+        Returns a list of formatted text snippets to inject into prompts.
+        """
+        if self.collection is None:
             return []
+        try:
+            count = self.collection.count()
+            if count == 0:
+                return []
+
+            results = self.collection.query(
+                query_texts=[query_text],
+                n_results=min(n_results, count),
+                include=["documents", "metadatas", "distances"],
+            )
+
+            lessons = []
+            if results.get("documents"):
+                for doc, meta, dist in zip(
+                    results["documents"][0],
+                    results["metadatas"][0],
+                    results["distances"][0],
+                ):
+                    # Only include results that are reasonably relevant (lower distance = more similar)
+                    if dist < 1.5:
+                        severity = meta.get("severity", "")
+                        vuln_type = meta.get("type", "")
+                        lessons.append(f"[{severity}] {vuln_type}:\n{doc}")
+            return lessons
+
+        except Exception as e:
+            logger.warning("Knowledge base lookup failed: %s", e)
+            return []
+
+    def recall_for_file(self, file_path: str, code_snippet: str = "", n_results: int = 4) -> list[str]:
+        """
+        Richer recall that combines file context + code hints for better relevance.
+        """
+        # Build a rich query that helps the embedding understand what we're looking at
+        query = f"Security audit for Python file: {file_path}\n"
+        if code_snippet:
+            query += f"Code context:\n{code_snippet[:500]}"
+        return self.recall_relevant_lessons(query, n_results=n_results)
+
+    # ------------------------------------------------------------------
+    # LEARN — used by the patch workflow after a successful fix
+    # ------------------------------------------------------------------
+
+    def learn_fix(
+        self,
+        vuln_type: str,
+        description: str,
+        fix_code: str,
+        file_path: str = "",
+        severity: str = "UNKNOWN",
+        cwe: str = "",
+    ) -> None:
+        """
+        Saves a structured Vulnerability → Fix pair to long-term memory.
+        Future scans of similar code will recall this lesson.
+        """
+        if self.collection is None:
+            return
+
+        doc_id = str(uuid.uuid4())
+        document_text = (
+            f"[VULNERABILITY TYPE]: {vuln_type}\n"
+            f"[SEVERITY]: {severity}\n"
+            f"[CWE]: {cwe}\n"
+            f"[DESCRIPTION]: {description}\n"
+            f"[SOURCE FILE]: {file_path}\n"
+            f"[SUCCESSFUL FIX PATTERN]:\n{fix_code[:2000]}"
+        )
+
+        try:
+            self.collection.add(
+                ids=[doc_id],
+                documents=[document_text],
+                metadatas=[{
+                    "type": vuln_type,
+                    "severity": severity,
+                    "cwe": cwe,
+                    "file": file_path,
+                    "timestamp": datetime.datetime.utcnow().isoformat(),
+                    "source": "learned",
+                }],
+            )
+            logger.info("Knowledge base: memorised fix for '%s' in %s", vuln_type, file_path)
+        except Exception as e:
+            logger.warning("Failed to save lesson: %s", e)

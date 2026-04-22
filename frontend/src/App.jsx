@@ -1,91 +1,142 @@
-import { useState, useEffect } from 'react';
-import api from './api';
+import { useState, useEffect, useCallback } from 'react';
+import api, { tokenStore, logout } from './api';
+import LoginPage from './components/LoginPage';
 import FileUpload from './components/FileUpload';
 import AuditWorkspace from './components/AuditWorkspace';
-import { ShieldCheck, AlertTriangle, FileText, Download, Loader2 } from 'lucide-react';
+import {
+  ShieldCheck, AlertTriangle, FileText,
+  Download, Loader2, LogOut, User,
+} from 'lucide-react';
 
+// ---------------------------------------------------------------------------
+// Helper — check if we already have a valid-looking token in storage
+// ---------------------------------------------------------------------------
+function hasStoredToken() {
+  return Boolean(tokenStore.get());
+}
+
+// ---------------------------------------------------------------------------
+// App
+// ---------------------------------------------------------------------------
 function App() {
+  // ── Auth state ──────────────────────────────────────────────────────────
+  const [isAuthenticated, setIsAuthenticated] = useState(hasStoredToken);
+
+  // ── App state ───────────────────────────────────────────────────────────
   const [sessionId, setSessionId] = useState(null);
   const [isUploading, setIsUploading] = useState(false);
   const [scanResults, setScanResults] = useState(null);
   const [selectedFile, setSelectedFile] = useState(null);
-  const [status, setStatus] = useState("Connecting...");
-  const [isExporting, setIsExporting] = useState(false); // <--- New State for Export loading
+  const [appStatus, setAppStatus] = useState('Connecting…');
+  const [isExporting, setIsExporting] = useState(false);
 
+  // ── Listen for 401 events dispatched by the Axios interceptor ───────────
   useEffect(() => {
+    const handleForceLogout = () => {
+      setIsAuthenticated(false);
+      setSessionId(null);
+      setScanResults(null);
+      setSelectedFile(null);
+    };
+    window.addEventListener('sentry:logout', handleForceLogout);
+    return () => window.removeEventListener('sentry:logout', handleForceLogout);
+  }, []);
+
+  // ── Backend health probe (only when authenticated) ───────────────────────
+  useEffect(() => {
+    if (!isAuthenticated) return;
     api.get('/health')
-      .then(res => setStatus(`Online: ${res.data.version}`))
-      .catch(err => setStatus("Offline: Check Backend Connection"));
+      .then(res => setAppStatus(`Online · ${res.data.version}`))
+      .catch(() => setAppStatus('Offline — check backend'));
+  }, [isAuthenticated]);
+
+  // ── Handlers ─────────────────────────────────────────────────────────────
+  const handleLogin = useCallback(() => {
+    setIsAuthenticated(true);
+  }, []);
+
+  const handleLogout = useCallback(() => {
+    logout();
+    setIsAuthenticated(false);
+    setSessionId(null);
+    setScanResults(null);
+    setSelectedFile(null);
+    setAppStatus('Connecting…');
   }, []);
 
   const handleFileUpload = async (file) => {
     setIsUploading(true);
-    setStatus("Uploading Codebase...");
+    setAppStatus('Uploading codebase…');
 
     const formData = new FormData();
-    formData.append("file", file);
+    formData.append('file', file);
 
     try {
-      const uploadRes = await api.post("/upload", formData, {
-        headers: { "Content-Type": "multipart/form-data" },
+      const uploadRes = await api.post('/upload', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
       });
 
       const newSessionId = uploadRes.data.session_id;
       setSessionId(newSessionId);
-      setStatus("Scanning for Vulnerabilities...");
+      setAppStatus('AI agents scanning for vulnerabilities…');
 
-      const scanRes = await api.post("/scan", { session_id: newSessionId });
-      setScanResults(scanRes.data.results);
-      setStatus("Scan Complete");
+      const scanRes = await api.post('/scan', { session_id: newSessionId });
+      const resultsArray = scanRes.data.report?.scan_results || [];
 
-    } catch (error) {
-      console.error(error);
-      setStatus("Error: " + (error.response?.data?.detail || error.message));
+      setScanResults(resultsArray);
+      setAppStatus('Scan complete');
+    } catch (err) {
+      const detail = err.response?.data?.detail || err.message;
+      setAppStatus(`Error: ${detail}`);
     } finally {
       setIsUploading(false);
     }
   };
 
-  // --- NEW: Handle PDF Export ---
   const handleExport = async () => {
     if (!sessionId) return;
     setIsExporting(true);
-    const prevStatus = status;
-    setStatus("Generating PDF Report...");
+    const prev = appStatus;
+    setAppStatus('Generating PDF report…');
 
     try {
-      const response = await api.post("/export", {
-        session_id: sessionId,
-        scan_results: scanResults || []
-      }, {
-        responseType: 'blob' // Crucial: Tells axios to handle binary data
-      });
+      const response = await api.post(
+        '/export',
+        { session_id: sessionId, scan_results: scanResults || [] },
+        { responseType: 'blob' }
+      );
 
-      // Create a temporary link to trigger the download
       const url = window.URL.createObjectURL(new Blob([response.data]));
       const link = document.createElement('a');
       link.href = url;
       link.setAttribute('download', `sentry_report_${sessionId.slice(0, 8)}.pdf`);
       document.body.appendChild(link);
       link.click();
-
-      // Cleanup
       link.remove();
       window.URL.revokeObjectURL(url);
 
-      setStatus("Report Downloaded!");
-      setTimeout(() => setStatus(prevStatus), 3000); // Revert status after 3s
-    } catch (error) {
-      console.error("Export failed:", error);
-      setStatus("Export Failed");
+      setAppStatus('Report downloaded!');
+      setTimeout(() => setAppStatus(prev), 3000);
+    } catch (err) {
+      setAppStatus('Export failed');
     } finally {
       setIsExporting(false);
     }
   };
 
+  // ── Login gate ────────────────────────────────────────────────────────────
+  if (!isAuthenticated) {
+    return <LoginPage onLogin={handleLogin} />;
+  }
+
+  // ── Main app ──────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-sentry-dark text-white p-8 font-sans">
+
+      {/* ── Header ── */}
       <header className="flex items-center justify-between mb-8 max-w-7xl mx-auto">
+
+        {/* Brand */}
         <div className="flex items-center gap-3">
           <ShieldCheck className="w-8 h-8 text-sentry-accent" />
           <div>
@@ -93,37 +144,72 @@ function App() {
           </div>
         </div>
 
-        {/* Header Actions */}
-        <div className="flex items-center gap-4">
-          <div className="text-xs font-mono bg-gray-800 px-3 py-1 rounded text-gray-400 border border-gray-700">
-            {status}
+        {/* Right-side controls */}
+        <div className="flex items-center gap-3">
+
+          {/* Status badge */}
+          <div className="text-xs font-mono bg-gray-800 px-3 py-1.5 rounded border border-gray-700 text-gray-400">
+            {appStatus}
           </div>
 
-          {/* Export Button (Only visible after scan) */}
+          {/* Export PDF (only when scan is done) */}
           {sessionId && scanResults && (
             <button
+              id="export-pdf-btn"
               onClick={handleExport}
               disabled={isExporting}
-              className="flex items-center gap-2 bg-sentry-accent text-sentry-dark px-4 py-2 rounded-lg font-bold hover:bg-white transition-colors text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex items-center gap-2 bg-sentry-accent text-sentry-dark px-4 py-2 rounded-lg
+                         font-bold text-sm hover:bg-white transition-colors
+                         disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {isExporting ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
-              {isExporting ? "Generating..." : "Export PDF"}
+              {isExporting
+                ? <><Loader2 size={16} className="animate-spin" /> Generating…</>
+                : <><Download size={16} /> Export PDF</>
+              }
             </button>
           )}
+
+          {/* User pill + Logout */}
+          <div className="flex items-center gap-2 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5">
+            <User size={14} className="text-gray-400" />
+            <span className="text-xs text-gray-300 font-mono">admin</span>
+            <button
+              id="logout-btn"
+              onClick={handleLogout}
+              title="Sign out"
+              className="ml-1 text-gray-500 hover:text-red-400 transition-colors"
+            >
+              <LogOut size={14} />
+            </button>
+          </div>
+
         </div>
       </header>
 
+      {/* ── Main content ── */}
       <main className="max-w-7xl mx-auto h-[80vh]">
+
+        {/* State 1: Not yet uploaded */}
         {!sessionId && (
           <div className="max-w-xl mx-auto mt-20">
             <FileUpload onUpload={handleFileUpload} isUploading={isUploading} />
           </div>
         )}
 
+        {/* State 2: Scan in progress */}
+        {sessionId && !scanResults && (
+          <div className="h-full flex flex-col items-center justify-center space-y-4">
+            <Loader2 className="w-16 h-16 text-sentry-accent animate-spin" />
+            <p className="text-xl font-bold animate-pulse text-white">{appStatus}</p>
+            <p className="text-gray-400 text-sm">Our AI agents are auditing your code…</p>
+          </div>
+        )}
+
+        {/* State 3: Scan complete — show workspace */}
         {scanResults && (
           <div className="grid grid-cols-12 gap-6 h-full">
 
-            {/* Sidebar List */}
+            {/* File list */}
             <div className="col-span-4 bg-sentry-card rounded-xl border border-gray-700 overflow-hidden flex flex-col">
               <div className="p-4 border-b border-gray-700 bg-gray-800/50">
                 <h2 className="font-semibold flex items-center gap-2 text-sm text-gray-300">
@@ -133,22 +219,22 @@ function App() {
               <div className="overflow-y-auto flex-1 p-2 space-y-2 custom-scrollbar">
                 {scanResults.map((file) => (
                   <div
-                    key={file.file}
+                    key={file.file || file.file_path}
                     onClick={() => setSelectedFile(file)}
-                    className={`p-3 rounded-lg cursor-pointer transition-all border ${selectedFile?.file === file.file
-                      ? 'bg-sentry-accent/10 border-sentry-accent'
-                      : 'bg-gray-800/30 border-transparent hover:bg-gray-800 hover:border-gray-600'
+                    className={`p-3 rounded-lg cursor-pointer transition-all border ${selectedFile?.file === file.file || selectedFile?.file_path === file.file_path
+                        ? 'bg-sentry-accent/10 border-sentry-accent'
+                        : 'bg-gray-800/30 border-transparent hover:bg-gray-800 hover:border-gray-600'
                       }`}
                   >
                     <div className="font-mono text-xs font-bold text-white truncate mb-2">
-                      {file.file}
+                      {file.file || file.file_path}
                     </div>
                     <div className="flex gap-2">
                       <span className="bg-red-900/40 text-red-300 text-[10px] px-2 py-0.5 rounded uppercase font-bold">
                         Score: {file.risk_score}
                       </span>
                       <span className="bg-gray-700 text-gray-300 text-[10px] px-2 py-0.5 rounded">
-                        {file.hotspots.length} Hotspots
+                        {file.hotspots?.length || 0} Hotspots
                       </span>
                     </div>
                   </div>
@@ -156,7 +242,7 @@ function App() {
               </div>
             </div>
 
-            {/* Main Workspace */}
+            {/* Audit workspace */}
             <div className="col-span-8 bg-sentry-card rounded-xl border border-gray-700 p-6 overflow-hidden">
               {selectedFile ? (
                 <AuditWorkspace sessionId={sessionId} file={selectedFile} />
@@ -167,6 +253,7 @@ function App() {
                 </div>
               )}
             </div>
+
           </div>
         )}
       </main>
