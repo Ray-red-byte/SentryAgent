@@ -78,11 +78,6 @@ def create_scan_workflow():
     
     return workflow.compile()
 
-
-# ============================================================================
-# SINGLE FILE AUDIT WORKFLOW
-# ============================================================================
-
 def create_audit_workflow():
     """
     Creates a simple workflow for auditing a single file.
@@ -99,11 +94,6 @@ def create_audit_workflow():
     workflow.add_edge("audit", END)
     
     return workflow.compile()
-
-
-# ============================================================================
-# PATCH GENERATION WORKFLOW
-# ============================================================================
 
 def create_patch_workflow():
     workflow = StateGraph(PatchState)

@@ -11,11 +11,6 @@ import os
 import subprocess
 from langchain_core.tools import tool
 
-
-# ============================================================================
-# TOOL 1 — OWASP / Knowledge-Base Research
-# ============================================================================
-
 @tool
 def search_owasp_guidelines(query: str) -> str:
     """
@@ -37,12 +32,7 @@ def search_owasp_guidelines(query: str) -> str:
         return "\n\n".join(lessons)
     except Exception as e:
         return f"Knowledge base unavailable: {e}. Proceed with standard OWASP best practices."
-
-
-# ============================================================================
-# TOOL 2 — File Reader
-# ============================================================================
-
+    
 @tool
 def read_file(file_path: str) -> str:
     """
@@ -62,11 +52,6 @@ def read_file(file_path: str) -> str:
     except OSError as e:
         return f"ERROR: Could not read {file_path}: {e}"
 
-
-# ============================================================================
-# TOOL 3 — Patch Writer
-# ============================================================================
-
 @tool
 def write_code_patch(file_path: str, patched_code: str) -> str:
     """
@@ -85,12 +70,7 @@ def write_code_patch(file_path: str, patched_code: str) -> str:
         return f"SUCCESS: Patch written to {file_path} ({len(patched_code)} chars)."
     except OSError as e:
         return f"ERROR: Could not write patch to {file_path}: {e}"
-
-
-# ============================================================================
-# TOOL 4 — Syntax Checker
-# ============================================================================
-
+    
 @tool
 def check_syntax(file_path: str) -> str:
     """
@@ -117,11 +97,6 @@ def check_syntax(file_path: str) -> str:
         )
     except OSError as e:
         return f"ERROR: Could not read {file_path}: {e}"
-
-
-# ============================================================================
-# TOOL 5 — Security Scanner (bandit)
-# ============================================================================
 
 @tool
 def run_security_scanner(file_path: str) -> str:

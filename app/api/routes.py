@@ -48,10 +48,7 @@ from app.models.schemas import (
     ApplyFixRequest
 )
 
-# --- Memory ---
 from app.memory.knowledge_base import SecurityKnowledgeBase
-
-# --- Error Handling ---
 from app.utils.error import safe_http_error
 
 # --- Legacy Agents (for features not yet migrated) ---
@@ -68,10 +65,6 @@ _API_PASSWORD = os.getenv("API_PASSWORD", "changeme")
 _JWT_SECRET = os.getenv("JWT_SECRET_KEY", "change-me-in-production-use-a-long-random-string")
 _JWT_ALGORITHM = "HS256"
 _TOKEN_EXPIRE_HOURS = 8
-
-# ============================================================================
-# AUTH ENDPOINT — Issue JWT tokens
-# ============================================================================
 
 @router.post("/auth/token")
 async def login(form_data: OAuth2PasswordRequestForm = Depends()):
@@ -97,11 +90,6 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     }
     token = jwt.encode(token_payload, _JWT_SECRET, algorithm=_JWT_ALGORITHM)
     return {"access_token": token, "token_type": "bearer", "expires_in_hours": _TOKEN_EXPIRE_HOURS}
-
-
-# ============================================================================
-# UPLOAD ENDPOINT
-# ============================================================================
 
 @router.post("/upload", dependencies=[Depends(get_current_user)])
 async def upload_codebase(
@@ -139,11 +127,6 @@ async def upload_codebase(
         logger.warning("Cache creation warning for session %s: %s", session_id, e)
 
     return {"session_id": session_id, "message": "Uploaded & Cached."}
-
-
-# ============================================================================
-# SCAN ENDPOINT (Using LangGraph)
-# ============================================================================
 
 @router.post("/scan", dependencies=[Depends(get_current_user)])
 async def scan_codebase(
@@ -194,11 +177,6 @@ async def scan_codebase(
     except Exception as e:
         safe_http_error(500, "Scan failed due to an internal error.", e)
 
-
-# ============================================================================
-# AUDIT ENDPOINT (Using LangGraph)
-# ============================================================================
-
 @router.post("/audit", dependencies=[Depends(get_current_user)])
 async def audit_code(
     request: AuditRequest,
@@ -232,11 +210,6 @@ async def audit_code(
         raise
     except Exception as e:
         safe_http_error(500, "Audit failed due to an internal error.", e)
-
-
-# ============================================================================
-# FIX ENDPOINT (Using LangGraph)
-# ============================================================================
 
 @router.post("/fix", dependencies=[Depends(get_current_user)])
 async def fix_code(
