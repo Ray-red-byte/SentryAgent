@@ -3,7 +3,7 @@ from app.agent.gemini_client import GeminiClient
 
 class SecurityTranslator:
     def __init__(self):
-        self.llm = GeminiClient()
+        self.llm = GeminiClient(model_name="models/gemini-1.5-flash")
 
     def translate_report(self, vulnerability_report: list):
         """
@@ -38,13 +38,3 @@ class SecurityTranslator:
         """
         
         return self.llm.analyze(prompt)
-
-if __name__ == "__main__":
-    # Test logic
-    sample_report = [{
-        "severity": "CRITICAL",
-        "type": "Injection: Command Injection",
-        "description": "os.system call with unsanitized user input."
-    }]
-    translator = SecurityTranslator()
-    print(translator.translate_report(sample_report))

@@ -5,35 +5,12 @@ import logging
 import google.generativeai as genai
 from langchain_google_genai import ChatGoogleGenerativeAI
 
+from app.config.gemini import CACHE_MODEL, PREFERRED_MODELS, JSON_GENERATION_CONFIG
+
 logger = logging.getLogger(__name__)
 
-# The models the cache manager creates caches for — must match here exactly.
-_CACHE_MODEL = "models/gemini-2.5-flash"
-
-# Preferred model order for non-cached calls
-_PREFERRED_MODELS = [
-    "models/gemini-2.5-flash",
-    "models/gemini-2.0-flash",
-    "models/gemini-1.5-flash-latest",
-    "models/gemini-1.5-flash",
-    "models/gemini-1.5-flash-002",
-    "models/gemini-1.5-pro",
-    "models/gemini-pro",
-    "models/gemini-1.0-pro",
-]
-
-# Generation config that strongly steers toward clean JSON output.
-# response_mime_type="application/json" asks Gemini to constrain its output
-# to valid JSON when the model supports it (1.5+).
-_JSON_GENERATION_CONFIG = genai.types.GenerationConfig(
-    temperature=0.1,          # Low temperature → more deterministic, less hallucination
-    top_p=0.95,
-    candidate_count=1,
-)
-
-
 class GeminiClient:
-    def __init__(self):
+    def __init__(self, model_name: str = None):
         self.api_key = os.getenv("GEMINI_API_KEY")
         self.model = None
 
@@ -42,11 +19,18 @@ class GeminiClient:
             return
 
         genai.configure(api_key=self.api_key)
-        self._auto_select_model()
+        self._auto_select_model(model_name=model_name)
 
-    def _auto_select_model(self):
+    def _auto_select_model(self, model_name=None):
         """Auto-selects the best available Gemini model for this API key."""
         try:
+            if model_name:
+                logger.info("Selected specified Gemini model: %s", model_name)
+                self.model = genai.GenerativeModel(
+                    model_name,
+                    generation_config=JSON_GENERATION_CONFIG,
+                )
+
             available = [
                 m.name
                 for m in genai.list_models()
@@ -55,7 +39,7 @@ class GeminiClient:
             logger.info("Available Gemini models: %s", available)
 
             selected = next(
-                (m for m in _PREFERRED_MODELS if m in available),
+                (m for m in PREFERRED_MODELS if m in available),
                 available[0] if available else None,
             )
 
@@ -65,14 +49,14 @@ class GeminiClient:
             logger.info("Auto-selected Gemini model: %s", selected)
             self.model = genai.GenerativeModel(
                 selected,
-                generation_config=_JSON_GENERATION_CONFIG,
+                generation_config=JSON_GENERATION_CONFIG,
             )
 
         except Exception as e:
             logger.warning("Error listing models (%s). Falling back to gemini-pro.", e)
             self.model = genai.GenerativeModel(
                 "models/gemini-pro",
-                generation_config=_JSON_GENERATION_CONFIG,
+                generation_config=JSON_GENERATION_CONFIG,
             )
             
     def analyze(self, prompt: str) -> str:
@@ -97,7 +81,7 @@ class GeminiClient:
             cache = genai.caching.CachedContent.get(cache_name)
             cached_model = genai.GenerativeModel.from_cached_content(
                 cached_content=cache,
-                generation_config=_JSON_GENERATION_CONFIG,
+                generation_config=JSON_GENERATION_CONFIG,
             )
             logger.info("Querying cache: %s", cache_name)
             return self._call_with_retry(lambda: cached_model.generate_content(prompt))
@@ -130,11 +114,7 @@ class GeminiClient:
             temperature=0.1,
             convert_system_message_to_human=True,
         )
-
-    # ------------------------------------------------------------------
-    # PRIVATE HELPERS
-    # ------------------------------------------------------------------
-
+    
     def _call_with_retry(self, call_fn, fallback: str = "[]", max_retries: int = 3) -> str:
         """
         Calls call_fn() and retries on 429 resource-exhausted errors.
