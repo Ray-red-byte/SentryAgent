@@ -11,42 +11,46 @@ from app.workflows.state import ScanState, AuditState, PatchState, ChatState
 from app.workflows.node.scan import (
     discover_files,
     parse_and_scan,
+    bundle_into_security_domains,   # Step 2: implemented in node/scan.py
     load_organizational_memory,
     deep_audit_high_risk_files,
     prioritize_vulnerabilities,
     generate_report,
 )
-from app.workflows.node.audit import audit_single_file
+from app.workflows.node.audit import audit_security_bundle
 from app.workflows.node.chat import run_chat_node
 from app.workflows.node.patch import generate_patch, save_patch_to_memory
 
 def create_scan_workflow():
     """
     Creates the main security scanning workflow.
-    
+
     Flow:
     1. Discover files
     2. Parse and scan for hotspots
-    3. Load organizational memory (parallel)
-    4. Conditional: Deep audit if high-risk files found
-    5. Conditional: Prioritize if vulnerabilities found
-    6. Generate report
+    3. Bundle files into security domains  (new)
+    4. Load organizational memory
+    5. Conditional: Deep audit bundles whose max risk score >= threshold
+    6. Conditional: Prioritize if vulnerabilities found
+    7. Generate report
     """
     workflow = StateGraph(ScanState)
-    
+
     # Add nodes
     workflow.add_node("discover", discover_files)
     workflow.add_node("parse", parse_and_scan)
+    workflow.add_node("bundle", bundle_into_security_domains)  # new
     workflow.add_node("memory", load_organizational_memory)
     workflow.add_node("audit", deep_audit_high_risk_files)
     workflow.add_node("prioritize", prioritize_vulnerabilities)
     workflow.add_node("report", generate_report)
-    
+
     # Define the flow
     workflow.set_entry_point("discover")
     workflow.add_edge("discover", "parse")
-    workflow.add_edge("parse", "memory")
-    
+    workflow.add_edge("parse", "bundle")   # parse → bundle (was parse → memory)
+    workflow.add_edge("bundle", "memory")
+
     # Conditional: Should we do deep audit?
     workflow.add_conditional_edges(
         "memory",
@@ -56,7 +60,7 @@ def create_scan_workflow():
             "report": "report"
         }
     )
-    
+
     # Conditional: Should we prioritize?
     workflow.add_conditional_edges(
         "audit",
@@ -66,10 +70,10 @@ def create_scan_workflow():
             "report": "report"
         }
     )
-    
+
     workflow.add_edge("prioritize", "report")
     workflow.add_edge("report", END)
-    
+
     return workflow.compile()
 
 def create_audit_workflow():
@@ -82,7 +86,7 @@ def create_audit_workflow():
     """
     workflow = StateGraph(AuditState)
     
-    workflow.add_node("audit", audit_single_file)
+    workflow.add_node("audit", audit_security_bundle)
     
     workflow.set_entry_point("audit")
     workflow.add_edge("audit", END)
@@ -186,6 +190,7 @@ async def run_full_scan(
         "cache_name": cache_name,
         "files_to_scan": [],
         "current_file": None,
+        "security_bundles": {},
         "scan_results": [],
         "vulnerabilities": [],
         "current_stage": "init",
@@ -217,34 +222,69 @@ async def run_file_audit(
 ) -> dict:
     """
     Audit a single file using the LangGraph workflow.
-    
-    Args:
-        session_id: Unique session identifier
-        file_path: Relative path to file
-        root_dir: Root directory
-        cache_name: Optional Gemini cache name
-    
-    Returns:
-        Audit report
+
+    Internally treated as a single-file bundle so the audit node can handle
+    both single-file and multi-file bundle paths uniformly.
     """
     initial_state: AuditState = {
         "session_id": session_id,
-        "file_path": file_path,
         "root_dir": root_dir,
         "cache_name": cache_name,
+        # Backward-compat: keep file_path for callers that read it directly
+        "file_path": file_path,
+        # Bundle fields: single file is a bundle of one
+        "security_bundle_name": file_path,
+        "involved_files": [file_path],
         "vulnerabilities": [],
         "audit_report": {},
         "current_stage": "init",
-        "error": None
+        "error": None,
     }
-    
+
     print(f"🕵️ Auditing file: {file_path}")
-    
+
     result = await audit_workflow.ainvoke(initial_state)
-    
+
     if result["current_stage"] == "error":
         raise Exception(result["error"])
-    
+
+    return result["audit_report"]
+
+
+async def run_bundle_audit(
+    session_id: str,
+    bundle_name: str,
+    involved_files: list[str],
+    root_dir: str,
+    cache_name: str = None,
+) -> dict:
+    """
+    Audit a security-domain bundle (multiple files as one prompt).
+
+    Args:
+        bundle_name: Domain label, e.g. "authentication"
+        involved_files: Relative paths of all files in the bundle
+    """
+    initial_state: AuditState = {
+        "session_id": session_id,
+        "root_dir": root_dir,
+        "cache_name": cache_name,
+        "file_path": None,
+        "security_bundle_name": bundle_name,
+        "involved_files": involved_files,
+        "vulnerabilities": [],
+        "audit_report": {},
+        "current_stage": "init",
+        "error": None,
+    }
+
+    print(f"🕵️ Auditing bundle '{bundle_name}' ({len(involved_files)} files)")
+
+    result = await audit_workflow.ainvoke(initial_state)
+
+    if result["current_stage"] == "error":
+        raise Exception(result["error"])
+
     return result["audit_report"]
 
 
@@ -252,17 +292,20 @@ async def run_patch_generation(
     session_id: str,
     file_path: str,
     root_dir: str,
-    cache_name: str = None
+    cache_name: str = None,
+    involved_files: list[str] = None,
 ) -> str:
     """
     Generate a security patch using the LangGraph workflow.
-    
+
     Args:
         session_id: Unique session identifier
-        file_path: Relative path to file
+        file_path: Primary file to patch
         root_dir: Root directory
         cache_name: Optional Gemini cache name
-    
+        involved_files: All files in the originating security bundle; defaults
+                        to [file_path] for single-file callers.
+
     Returns:
         Patched code
     """
@@ -271,6 +314,7 @@ async def run_patch_generation(
         "file_path": file_path,
         "root_dir": root_dir,
         "cache_name": cache_name,
+        "involved_files": involved_files if involved_files is not None else [file_path],
         "vulnerabilities": [],
         "original_code": "",
         "patched_code": "",

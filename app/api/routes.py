@@ -191,7 +191,15 @@ async def audit_code(
         if not str(full_target_path).startswith(str(session_path.resolve()) + os.sep):
             raise HTTPException(status_code=400, detail="Invalid file path.")
 
-        # Check Redis for active cache
+        # Return cached audit result if available (invalidated by /apply)
+        audit_key = f"audit_result:{request.session_id}:{request.file_path}"
+        if redis_client:
+            cached = redis_client.get(audit_key)
+            if cached:
+                logger.info("Returning cached audit for %s", request.file_path)
+                return {"file": request.file_path, "report": json.loads(cached), "cached": True}
+
+        # Check Redis for active Gemini cache
         cache_name = None
         if redis_client:
             cache_name = redis_client.get(f"cache:{request.session_id}")
@@ -203,6 +211,10 @@ async def audit_code(
             root_dir=str(session_path),
             cache_name=cache_name,
         )
+
+        # Persist result so switching back to this file is instant
+        if redis_client:
+            redis_client.setex(audit_key, 3600, json.dumps(report))
 
         return {"file": request.file_path, "report": report}
 
@@ -226,12 +238,21 @@ async def fix_code(
     try:
         session_path = workspace_manager.get_workspace_path(request.session_id)
 
-        # Security: Path Traversal Check (was missing in original code)
+        # Security: Path Traversal Check
         full_target_path = (session_path / request.file_path).resolve()
         if not str(full_target_path).startswith(str(session_path.resolve()) + os.sep):
             raise HTTPException(status_code=400, detail="Invalid file path.")
 
-        # Check Redis for active cache
+        # Return cached patch if available (invalidated by /apply)
+        fix_key = f"fix_result:{request.session_id}:{request.file_path}"
+        if redis_client:
+            cached = redis_client.get(fix_key)
+            if cached:
+                logger.info("Returning cached fix for %s", request.file_path)
+                fixed_str = cached if isinstance(cached, str) else cached.decode()
+                return {"file": request.file_path, "fixed_code": fixed_str, "cached": True}
+
+        # Check Redis for active Gemini cache
         cache_name = None
         if redis_client:
             cache_name = redis_client.get(f"cache:{request.session_id}")
@@ -243,6 +264,10 @@ async def fix_code(
             root_dir=str(session_path),
             cache_name=cache_name,
         )
+
+        # Persist so switching back to this file restores the patch instantly
+        if redis_client:
+            redis_client.setex(fix_key, 3600, fixed_content)
 
         return {"file": request.file_path, "fixed_code": fixed_content}
 
@@ -345,10 +370,12 @@ async def apply_fix(
         except Exception as e:
             logger.warning("Could not persist fix to knowledge base: %s", e)
 
-        # 4. Invalidate Gemini cache (code has changed)
+        # 4. Invalidate Gemini cache and per-file audit/fix cache (code has changed)
         if redis_client:
             redis_client.delete(f"cache:{request.session_id}")
-            logger.info("Cache invalidated for session %s", request.session_id)
+            redis_client.delete(f"audit_result:{request.session_id}:{request.file_path}")
+            redis_client.delete(f"fix_result:{request.session_id}:{request.file_path}")
+            logger.info("Cache invalidated for session %s / file %s", request.session_id, request.file_path)
 
         return {
             "status": "applied",

@@ -67,6 +67,11 @@ const AuditWorkspace = ({ sessionId, file }) => {
     const [progressLabel, setProgressLabel] = useState('');
     const chatEndRef = useRef(null);
 
+    // Per-file result cache so switching back to a file restores its last state
+    const fileCache = useRef({});
+    // Tracks the active file key — lets async callbacks detect they've gone stale
+    const currentFileRef = useRef(null);
+
     // Progressive audit animation (fake progress while AI thinks)
     const progressTimerRef = useRef(null);
     const startProgressAnimation = (startPct, endPct, label, durationMs) => {
@@ -82,18 +87,43 @@ const AuditWorkspace = ({ sessionId, file }) => {
         }, 200);
     };
 
-    // Reset when file changes
+    // Restore from cache or reset when the selected file changes
     useEffect(() => {
-        setReport([]);
-        setFixedCode(null);
-        setChatHistory([]);
-        setActiveTab('audit');
-        setHasAudited(false);
-        setApplyState('idle');
-        setDownloadUrl(null);
-        setProgress(0);
+        const fileKey = file?.file || file?.file_path;
+        if (!fileKey) return;
+
+        currentFileRef.current = fileKey;
         clearInterval(progressTimerRef.current);
+
+        const cached = fileCache.current[fileKey];
+        if (cached) {
+            setReport(cached.report ?? []);
+            setFixedCode(cached.fixedCode ?? null);
+            setChatHistory(cached.chatHistory ?? []);
+            setHasAudited(cached.hasAudited ?? false);
+            setApplyState(cached.applyState ?? 'idle');
+            setDownloadUrl(cached.downloadUrl ?? null);
+        } else {
+            setReport([]);
+            setFixedCode(null);
+            setChatHistory([]);
+            setHasAudited(false);
+            setApplyState('idle');
+            setDownloadUrl(null);
+        }
+        // Transient state always resets on file switch
+        setLoading(false);
+        setActiveTab('audit');
+        setProgress(0);
+        setProgressLabel('');
     }, [file]);
+
+    // Persist state to the per-file cache whenever it changes
+    useEffect(() => {
+        const fileKey = file?.file || file?.file_path;
+        if (!fileKey) return;
+        fileCache.current[fileKey] = { report, fixedCode, chatHistory, hasAudited, applyState, downloadUrl };
+    }, [file, report, fixedCode, chatHistory, hasAudited, applyState, downloadUrl]);
 
     // Auto-scroll chat
     useEffect(() => {
@@ -107,54 +137,59 @@ const AuditWorkspace = ({ sessionId, file }) => {
 
     const runAudit = async () => {
         if (loading) return;
+        const thisFile = file.file || file.file_path;
         setLoading(true);
         setHasAudited(false);
         setReport([]);
         startProgressAnimation(0, 85, 'AI analyzing file…', 40000);
 
         try {
-            const filePath = file.file || file.file_path;
-            const res = await api.post('/audit', { session_id: sessionId, file_path: filePath });
-            const raw = Array.isArray(res.data.report) ? res.data.report : [];
+            const res = await api.post('/audit', { session_id: sessionId, file_path: thisFile });
+            // Discard results if the user navigated to a different file while this was running
+            if (currentFileRef.current !== thisFile) return;
 
-            // Filter out parser-error meta-entries for display
+            const raw = Array.isArray(res.data.report) ? res.data.report : [];
             const findings = raw.filter(v => v.severity !== 'ERROR');
             setReport(findings.length > 0 ? findings : raw);
             setHasAudited(true);
             setProgress(100);
             setProgressLabel('Audit complete');
         } catch (err) {
+            if (currentFileRef.current !== thisFile) return;
             console.error('Audit failed:', err);
             setReport([{ severity: 'ERROR', type: 'Connection Error', description: err.response?.data?.detail || err.message, fix: '' }]);
             setHasAudited(true);
         } finally {
-            setLoading(false);
             clearInterval(progressTimerRef.current);
+            if (currentFileRef.current === thisFile) setLoading(false);
         }
     };
 
     const runFix = async () => {
         if (fixedCode) { setActiveTab('fix'); return; }
+        const thisFile = file.file || file.file_path;
         setLoading(true);
         startProgressAnimation(0, 90, 'Generating security patch…', 60000);
 
         try {
-            const filePath = file.file || file.file_path;
-            const res = await api.post('/fix', { session_id: sessionId, file_path: filePath });
+            const res = await api.post('/fix', { session_id: sessionId, file_path: thisFile });
+            if (currentFileRef.current !== thisFile) return;
             setFixedCode(res.data.fixed_code);
             setActiveTab('fix');
             setProgress(100);
             setProgressLabel('Patch ready');
         } catch (err) {
+            if (currentFileRef.current !== thisFile) return;
             console.error('Fix failed:', err);
         } finally {
-            setLoading(false);
             clearInterval(progressTimerRef.current);
+            if (currentFileRef.current === thisFile) setLoading(false);
         }
     };
 
     const applyFix = async () => {
         if (!fixedCode) return;
+        const thisFile = file.file || file.file_path;
         setApplyState('applying');
         setLoading(true);
 
@@ -162,12 +197,11 @@ const AuditWorkspace = ({ sessionId, file }) => {
         const vulnTypes = [...new Set(report.map(v => v.type).filter(Boolean))].join(', ');
         const topSeverity = report.find(v => ['CRITICAL', 'HIGH'].includes(v.severity))?.severity || 'MEDIUM';
         const cwes = [...new Set(report.map(v => v.cwe).filter(Boolean))].join(', ');
-        const filePath = file.file || file.file_path;
 
         try {
-            const res = await api.post('/apply', {
+            await api.post('/apply', {
                 session_id: sessionId,
-                file_path: filePath,
+                file_path: thisFile,
                 fixed_code: fixedCode,
                 vuln_type: vulnTypes || 'Security Fix',
                 severity: topSeverity,
@@ -177,19 +211,23 @@ const AuditWorkspace = ({ sessionId, file }) => {
             setApplyState('applied');
             setDownloadUrl(`/v2/download/${sessionId}`);
 
-            // Auto re-audit after 500ms to show the "clean" state
+            // Re-audit after apply to confirm the file is now clean.
+            // Guarded: if the user switched files before the timer fires, skip.
             setTimeout(() => {
+                if (currentFileRef.current !== thisFile) return;
                 setFixedCode(null);
                 setActiveTab('audit');
                 setHasAudited(false);
                 runAudit();
             }, 800);
         } catch (err) {
-            console.error('Apply failed:', err);
-            setApplyState('error');
-            alert('Failed to apply fix: ' + (err.response?.data?.detail || err.message));
+            if (currentFileRef.current === thisFile) {
+                console.error('Apply failed:', err);
+                setApplyState('error');
+                alert('Failed to apply fix: ' + (err.response?.data?.detail || err.message));
+            }
         } finally {
-            setLoading(false);
+            if (currentFileRef.current === thisFile) setLoading(false);
         }
     };
 

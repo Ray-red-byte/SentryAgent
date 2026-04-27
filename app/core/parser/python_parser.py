@@ -138,3 +138,91 @@ class PythonParser:
                 "args": args
             })
         return results
+
+    # ------------------------------------------------------------------
+    # AST-Aware Surgical Patching Helpers
+    # ------------------------------------------------------------------
+
+    def find_function_range(self, source: bytes, function_name: str) -> tuple[int, int] | None:
+        """
+        Walks the Tree-sitter AST to find the exact start_byte / end_byte of
+        a **top-level** function_definition whose name matches `function_name`.
+
+        Returns (start_byte, end_byte) or None if no match is found.
+        """
+        tree = self.parse(source)
+        for child in tree.root_node.children:
+            node = child
+            # Handle decorated functions (the definition is nested inside
+            # a decorated_definition node)
+            if child.type == "decorated_definition":
+                for sub in child.children:
+                    if sub.type == "function_definition":
+                        node = sub
+                        break
+                else:
+                    continue
+
+            if node.type != "function_definition":
+                continue
+
+            name_node = node.child_by_field_name("name")
+            if name_node and self.get_node_text(name_node, source) == function_name:
+                # Return the range of the *outermost* node (includes decorators)
+                return (child.start_byte, child.end_byte)
+
+        return None
+
+    def find_method_range(
+        self, source: bytes, class_name: str, method_name: str
+    ) -> tuple[int, int] | None:
+        """
+        Walks the Tree-sitter AST to find the exact start_byte / end_byte of
+        a method (`method_name`) inside a class (`class_name`).
+
+        Returns (start_byte, end_byte) or None if no match is found.
+        """
+        tree = self.parse(source)
+        for child in tree.root_node.children:
+            cls_node = child
+            # Handle decorated classes
+            if child.type == "decorated_definition":
+                for sub in child.children:
+                    if sub.type == "class_definition":
+                        cls_node = sub
+                        break
+                else:
+                    continue
+
+            if cls_node.type != "class_definition":
+                continue
+
+            cls_name_node = cls_node.child_by_field_name("name")
+            if not cls_name_node or self.get_node_text(cls_name_node, source) != class_name:
+                continue
+
+            # Found the class — now search its body for the method
+            body = cls_node.child_by_field_name("body")
+            if not body:
+                continue
+
+            for member in body.children:
+                method_node = member
+                # Handle decorated methods
+                if member.type == "decorated_definition":
+                    for sub in member.children:
+                        if sub.type == "function_definition":
+                            method_node = sub
+                            break
+                    else:
+                        continue
+
+                if method_node.type != "function_definition":
+                    continue
+
+                m_name_node = method_node.child_by_field_name("name")
+                if m_name_node and self.get_node_text(m_name_node, source) == method_name:
+                    # Return the range of the outermost node (includes decorators)
+                    return (member.start_byte, member.end_byte)
+
+        return None

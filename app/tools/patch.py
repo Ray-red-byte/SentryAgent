@@ -138,6 +138,202 @@ def run_security_scanner(file_path: str) -> str:
 
 
 # ============================================================================
+# SURGICAL PATCHING TOOLS (Feature 1 — AST-Aware)
+# ============================================================================
+
+@tool
+def replace_function(file_path: str, function_name: str, new_code: str) -> str:
+    """
+    Replaces an entire top-level function in the file with new_code using
+    Tree-sitter AST to locate exact byte boundaries.
+
+    PREFER this tool over write_code_patch when the fix is limited to a single
+    function. It leaves the rest of the file completely untouched.
+
+    Args:
+        file_path: Absolute path to the Python file.
+        function_name: Name of the top-level function to replace.
+        new_code: The full replacement function source (including def line, decorators, etc.).
+
+    Returns a success or error message.
+    """
+    try:
+        from app.core.parser.python_parser import PythonParser
+
+        with open(file_path, "rb") as f:
+            source = f.read()
+
+        parser = PythonParser()
+        byte_range = parser.find_function_range(source, function_name)
+        if byte_range is None:
+            return (
+                f"ERROR: Function '{function_name}' not found in {file_path}. "
+                "Use read_file to check the actual function names."
+            )
+
+        start, end = byte_range
+        patched = source[:start] + new_code.encode("utf-8") + source[end:]
+
+        with open(file_path, "wb") as f:
+            f.write(patched)
+
+        return (
+            f"SUCCESS: Replaced function '{function_name}' in {file_path} "
+            f"(bytes {start}–{end} → {len(new_code)} chars)."
+        )
+    except Exception as e:
+        return f"ERROR: replace_function failed: {e}"
+
+
+@tool
+def replace_class_method(
+    file_path: str, class_name: str, method_name: str, new_code: str
+) -> str:
+    """
+    Replaces a single method inside a class with new_code using Tree-sitter
+    AST to locate exact byte boundaries.
+
+    PREFER this tool when the vulnerability is inside one method of a class.
+    It leaves the rest of the class and file completely untouched.
+
+    Args:
+        file_path: Absolute path to the Python file.
+        class_name: Name of the class containing the method.
+        method_name: Name of the method to replace.
+        new_code: The full replacement method source (including def line,
+                  decorators, correct indentation).
+
+    Returns a success or error message.
+    """
+    try:
+        from app.core.parser.python_parser import PythonParser
+
+        with open(file_path, "rb") as f:
+            source = f.read()
+
+        parser = PythonParser()
+        byte_range = parser.find_method_range(source, class_name, method_name)
+        if byte_range is None:
+            return (
+                f"ERROR: Method '{class_name}.{method_name}' not found in {file_path}. "
+                "Use read_file to check the actual class/method names."
+            )
+
+        start, end = byte_range
+        patched = source[:start] + new_code.encode("utf-8") + source[end:]
+
+        with open(file_path, "wb") as f:
+            f.write(patched)
+
+        return (
+            f"SUCCESS: Replaced method '{class_name}.{method_name}' in {file_path} "
+            f"(bytes {start}–{end} → {len(new_code)} chars)."
+        )
+    except Exception as e:
+        return f"ERROR: replace_class_method failed: {e}"
+
+
+# ============================================================================
+# STRICT DIFF TOOL (Feature 2)
+# ============================================================================
+
+@tool
+def apply_diff(file_path: str, search_block: str, replace_block: str) -> str:
+    """
+    Exact search-and-replace: finds `search_block` verbatim in the file and
+    replaces it with `replace_block`.
+
+    Returns an error if the search_block is not found — this forces you to
+    re-read the file and match indentation / whitespace exactly.
+
+    Use this as a lightweight alternative to replace_function when the change
+    is smaller than a full function (e.g. fixing one line or one expression).
+
+    Args:
+        file_path: Absolute path to the file.
+        search_block: The exact text to find (must match verbatim including whitespace).
+        replace_block: The replacement text.
+
+    Returns a success or error message.
+    """
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        if search_block not in content:
+            return (
+                "SEARCH BLOCK NOT FOUND — check indentation and whitespace. "
+                "Use read_file to see the exact current contents, then try again."
+            )
+
+        # Guard: ensure only one occurrence to prevent ambiguous edits
+        occurrences = content.count(search_block)
+        if occurrences > 1:
+            return (
+                f"AMBIGUOUS: search_block appears {occurrences} times in {file_path}. "
+                "Include more surrounding context to make the match unique."
+            )
+
+        patched = content.replace(search_block, replace_block, 1)
+
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(patched)
+
+        return (
+            f"SUCCESS: Replaced 1 occurrence in {file_path} "
+            f"({len(search_block)} chars → {len(replace_block)} chars)."
+        )
+    except Exception as e:
+        return f"ERROR: apply_diff failed: {e}"
+
+
+# ============================================================================
+# FUNCTIONAL TEST TOOL (Feature 3)
+# ============================================================================
+
+@tool
+def run_unit_tests(test_file_path: str = "") -> str:
+    """
+    Runs pytest to verify that the patched code does not break existing tests.
+
+    Call this AFTER check_syntax and run_security_scanner to confirm no
+    business-logic regressions were introduced by the patch.
+
+    Args:
+        test_file_path: (Optional) Absolute path to a specific test file.
+                        If empty, runs the entire tests/ directory.
+
+    Returns pass/fail status and truncated output.
+    """
+    try:
+        cmd = ["python", "-m", "pytest", "-x", "-q", "--tb=short"]
+        if test_file_path:
+            cmd.append(test_file_path)
+        else:
+            cmd.append("tests/")
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        status = "PASSED" if result.returncode == 0 else "FAILED"
+        output = (result.stdout + "\n" + result.stderr).strip()
+        # Truncate to avoid overwhelming the agent context window
+        return f"UNIT TESTS {status}:\n{output[:3000]}"
+    except FileNotFoundError:
+        return (
+            "pytest is not installed or tests/ directory not found. "
+            "Skipping unit tests. Ensure the patch is correct manually."
+        )
+    except subprocess.TimeoutExpired:
+        return "UNIT TESTS TIMEOUT: pytest took too long (>60s). Proceed with manual review."
+    except Exception as e:
+        return f"UNIT TESTS ERROR: {e}"
+
+
+# ============================================================================
 # LEGACY TOOLS (kept for backward compatibility with older subgraph versions)
 # ============================================================================
 

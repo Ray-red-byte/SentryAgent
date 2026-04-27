@@ -9,37 +9,43 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-def audit_single_file(state: AuditState) -> AuditState:
-    """Audit a single file for vulnerabilities."""
-    print(f"🕵️ [AUDIT] Analyzing {state['file_path']}...")
+def audit_security_bundle(state: AuditState) -> AuditState:
+    """Audit a security-domain bundle (one or more files) for vulnerabilities."""
+    involved_files = state.get("involved_files") or []
+    bundle_name = state.get("security_bundle_name") or state.get("file_path") or "unknown"
+
+    label = bundle_name if len(involved_files) != 1 else involved_files[0]
+    print(f"🕵️ [AUDIT] Analyzing bundle '{label}' ({len(involved_files)} file(s))...")
 
     try:
         auditor = SecurityAuditor(root_dir=state["root_dir"])
+        cache_name = state.get("cache_name")
 
-        # Use cache if available
-        if state.get("cache_name"):
-            report = auditor.audit_file_with_cache(
-                state["file_path"],
-                state["cache_name"]
-            )
+        if len(involved_files) == 1:
+            # Single-file: use existing per-file path (cheaper prompt)
+            fp = involved_files[0]
+            if cache_name:
+                report = auditor.audit_file_with_cache(fp, cache_name)
+            else:
+                report = auditor.audit_file(fp)
         else:
-            report = auditor.audit_file(state["file_path"])
+            # Multi-file bundle: send all files in one prompt
+            report = auditor.audit_bundle(bundle_name, involved_files, cache_name=cache_name)
 
-        # Convert to Vulnerability objects
         vulnerabilities = []
         for vuln_dict in report:
             if isinstance(vuln_dict, dict) and vuln_dict.get("severity") != "ERROR":
                 vuln = Vulnerability(
                     type=vuln_dict.get("type", "Unknown"),
                     severity=vuln_dict.get("severity", "INFO"),
-                    file=state["file_path"],
+                    file=vuln_dict.get("file") or (involved_files[0] if involved_files else bundle_name),
                     line=vuln_dict.get("line", 0),
                     description=vuln_dict.get("description", ""),
                     fix_suggestion=vuln_dict.get("fix", "")
                 )
                 vulnerabilities.append(vuln)
 
-        print(f"✅ [AUDIT] Found {len(vulnerabilities)} issues")
+        print(f"✅ [AUDIT] Found {len(vulnerabilities)} issues in '{label}'")
 
         return {
             **state,

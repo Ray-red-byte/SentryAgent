@@ -84,11 +84,75 @@ class SecurityAuditor:
             enriched_context = context
 
         prompt = self.prompts.get_prompt(
-            "auditor.audit_with_context", context=enriched_context
+            "auditor.audit_with_context", file_path=file_path, context=enriched_context
         )
 
         raw_response = self.llm.analyze(prompt)
         return self.parse_json_response(raw_response, source_file=file_path)
+
+    def audit_bundle(self, bundle_name: str, involved_files: list[str], cache_name: str = None):
+        """
+        Audit a security-domain bundle (one or more files) as a single prompt.
+
+        Fast path (cache_name provided): sends only the file list; Gemini locates
+        the files in its cached context.
+        Slow path: concatenates all file contents and appends them after the
+        rendered prompt to avoid brace-collision with .format().
+        """
+        logger.info("Auditor auditing bundle '%s' (%d files)", bundle_name, len(involved_files))
+
+        # RAG: recall lessons relevant to any file in the bundle
+        past_lessons = []
+        for fp in involved_files:
+            import os
+            full_path = os.path.join(self.assembler.root_dir, fp)
+            code_snippet = ""
+            if os.path.exists(full_path):
+                try:
+                    with open(full_path, "r", encoding="utf-8") as f:
+                        code_snippet = f.read(600)
+                except Exception:
+                    pass
+            past_lessons.extend(self.historian.recall_for_file(fp, code_snippet=code_snippet))
+
+        lessons_block = self._format_lessons(past_lessons)
+        file_list = "\n".join(f"- {fp}" for fp in involved_files)
+
+        if cache_name:
+            base_prompt = self.prompts.get_prompt(
+                "auditor.audit_bundle_with_cache",
+                bundle_name=bundle_name,
+                file_list=file_list,
+            )
+            final_prompt = f"{base_prompt}\n\n{lessons_block}" if lessons_block else base_prompt
+            raw_response = self.llm.analyze_with_cache(final_prompt, cache_name)
+        else:
+            base_prompt = self.prompts.get_prompt(
+                "auditor.audit_bundle_with_context",
+                bundle_name=bundle_name,
+            )
+            if lessons_block:
+                base_prompt = f"{base_prompt}\n\n{lessons_block}"
+            concatenated = self._build_concatenated_context(involved_files)
+            final_prompt = f"{base_prompt}\n\n{concatenated}"
+            raw_response = self.llm.analyze(final_prompt)
+
+        return self.parse_json_response(raw_response, source_file=bundle_name)
+
+    def _build_concatenated_context(self, involved_files: list[str]) -> str:
+        """Concatenate all files in the bundle into one context block."""
+        import os
+        parts = []
+        for fp in involved_files:
+            full_path = os.path.join(self.assembler.root_dir, fp)
+            try:
+                with open(full_path, "r", encoding="utf-8") as f:
+                    code = f.read()
+                parts.append(f"=== FILE: {fp} ===\n{code}")
+            except OSError as e:
+                logger.warning("Could not read %s: %s", fp, e)
+                parts.append(f"=== FILE: {fp} ===\n[Could not read file: {e}]")
+        return "\n\n".join(parts)
 
     def chat_with_file(
         self,

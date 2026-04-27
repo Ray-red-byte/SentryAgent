@@ -95,3 +95,5 @@ db_storage/
 *.swo
 
 /test
+
+.claudeignore

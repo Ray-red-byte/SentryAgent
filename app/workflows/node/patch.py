@@ -64,7 +64,57 @@ def generate_patch(state: PatchState) -> PatchState:
     vulnerabilities = state.get("vulnerabilities", [])
     vuln_summary = _format_vulnerabilities(vulnerabilities)
 
+    # ------------------------------------------------------------------
+    # Feature 4 — RAG Golden Examples Injection
+    # Query ChromaDB for similar past vulnerability fixes and inject them
+    # into the prompt so the agent starts with proven fix patterns.
+    # ------------------------------------------------------------------
+    golden_section = ""
+    try:
+        kb = SecurityKnowledgeBase()
+        vuln_query = " ".join([
+            v.get("type", "") if isinstance(v, dict) else getattr(v, "type", "")
+            for v in vulnerabilities
+        ])
+        if vuln_query.strip():
+            golden_examples = kb.recall_relevant_lessons(f"fix for {vuln_query}", n_results=2)
+            if golden_examples:
+                golden_section = (
+                    "=== GOLDEN EXAMPLES (proven fix patterns from past scans) ===\n"
+                    + "\n\n".join(golden_examples)
+                    + "\n=== END GOLDEN EXAMPLES ===\n\n"
+                )
+    except Exception as e:
+        logger.warning("[PATCH] Could not load golden examples: %s", e)
+
+    # Build cross-file bundle context for the ReAct agent
+    bundle_section = ""
+    involved_files = state.get("involved_files", [file_path])
+    peer_files = [fp for fp in involved_files if fp != file_path]
+    if peer_files:
+        peer_parts = []
+        for fp in peer_files:
+            peer_path = f"{root_dir}/{fp}"
+            try:
+                with open(peer_path, "r", encoding="utf-8") as fh:
+                    peer_code = fh.read()
+                peer_parts.append(f"=== BUNDLE FILE: {fp} ===\n{peer_code}")
+            except OSError as e:
+                logger.warning("[PATCH] Could not read bundle peer %s: %s", fp, e)
+                peer_parts.append(f"=== BUNDLE FILE: {fp} ===\n[Could not read: {e}]")
+        bundle_section = (
+            "=== SECURITY DOMAIN BUNDLE CONTEXT ===\n"
+            "The vulnerability may span these peer files. Read them to understand "
+            "cross-file data flows, variable types, and DB schemas before patching. "
+            "You may also apply `replace_function` or `replace_class_method` on any "
+            "of these files if the fix requires cross-file changes.\n\n"
+            + "\n\n".join(peer_parts)
+            + "\n=== END BUNDLE CONTEXT ===\n\n"
+        )
+
     initial_message = (
+        f"{golden_section}"
+        f"{bundle_section}"
         f"You must fix the security vulnerabilities listed below in the Python file.\n\n"
         f"**File (absolute path):** `{full_path}`\n\n"
         f"**Reported vulnerabilities:**\n{vuln_summary}\n\n"
@@ -83,7 +133,8 @@ def generate_patch(state: PatchState) -> PatchState:
 
     initial_message += (
         f"Follow your strict workflow: search_owasp_guidelines → read_file → "
-        f"write_code_patch → check_syntax → run_security_scanner.\n"
+        f"replace_function / replace_class_method / apply_diff (prefer surgical tools) → "
+        f"check_syntax → run_security_scanner → run_unit_tests.\n"
         f"Return the complete patched source in a ```python ... ``` block when done."
     )
 
@@ -176,6 +227,7 @@ def review_patch_node(state: PatchState) -> dict:
 
     patcher = SecurityPatcher(root_dir=state.get("root_dir", "app"))
     review_result = patcher.review_patch(
+        file_path=state["file_path"],
         original_code=state["original_code"],
         patched_code=state["patched_code"],
         vulnerabilities=state["vulnerabilities"],
