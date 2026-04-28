@@ -67,16 +67,23 @@ class WorkspaceManager:
 
             # 2. Open the ZIP and validate every member path (Zip Slip prevention)
             resolved_session = session_path.resolve()
+            _SKIP_PREFIXES = ("__MACOSX/", "__MACOSX\\")
             with zipfile.ZipFile(zip_path, "r") as zip_ref:
+                members_to_extract = []
                 for member in zip_ref.infolist():
+                    # Drop macOS metadata entries before they touch the filesystem
+                    if any(member.filename.startswith(p) for p in _SKIP_PREFIXES):
+                        continue
                     member_path = (session_path / member.filename).resolve()
                     if not str(member_path).startswith(str(resolved_session)):
                         raise HTTPException(
                             status_code=400,
                             detail=f"Unsafe path in ZIP: {member.filename}",
                         )
-                # Extract only after all paths have been validated
-                zip_ref.extractall(session_path)
+                    members_to_extract.append(member)
+                # Extract only validated, non-metadata members
+                for member in members_to_extract:
+                    zip_ref.extract(member, session_path)
 
             # 3. Clean up (remove the zip file to save space)
             os.remove(zip_path)
