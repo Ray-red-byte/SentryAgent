@@ -6,6 +6,9 @@ from typing import List, Optional
 class AuditRequest(BaseModel):
     session_id: str
     file_path: str
+    # Bundle audit fields (optional — omit for single-file audit)
+    bundle_name: Optional[str] = None
+    involved_files: Optional[List[str]] = None
 
 class ScanRequest(BaseModel):
     session_id: str
@@ -21,6 +24,15 @@ class ChatRequest(BaseModel):
     session_id: str
     file_path: str
     query: str
+
+class FixRequest(BaseModel):
+    session_id: str
+    file_path: str
+    # Bundle fields — omit for single-file fixes
+    bundle_name: Optional[str] = None
+    involved_files: Optional[List[str]] = None
+    # Vulnerability list — when provided, the patcher targets every item
+    vulnerabilities: Optional[List[dict]] = None
 
 class ApplyFixRequest(BaseModel):
     session_id: str

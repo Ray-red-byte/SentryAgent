@@ -18,4 +18,9 @@ The complete source code for all files in this bundle is appended below.
 
 Apply every check from the VULNERABILITY CLASSES list to the full bundle, tracing all cross-file data flows.
 
-Return your findings as a JSON array following the STRICT OUTPUT FORMAT.
+**⚠️ PRECISION REQUIREMENTS — MANDATORY:**
+- Every finding MUST include a `"code_snippet"` field containing the exact 1–3 lines of vulnerable code copied verbatim from the source.
+- The `"line"` field MUST be the exact integer line number where the dangerous operation occurs. Counting from line 1. Do not estimate or approximate.
+- **Do NOT report a vulnerability if you cannot identify the exact line number and provide a real code snippet.** A vague finding with no pinpointed location must be omitted entirely.
+
+Return your findings as a JSON array following the STRICT OUTPUT FORMAT. Each element must include all standard fields plus a `"code_snippet"` field with the verbatim vulnerable line(s).

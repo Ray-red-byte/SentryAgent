@@ -84,11 +84,19 @@ def _module_to_path(module: str) -> str:
 # Node 1: discover_files
 # ---------------------------------------------------------------------------
 
+_SKIP_DIRS = frozenset({
+    "__pycache__", "__MACOSX", "venv", ".venv", "env", ".env",
+    "node_modules", ".git", ".tox", "dist", "build", ".mypy_cache",
+})
+_SKIP_EXTS = frozenset({".pyc", ".pyo", ".pyd"})
+
+
 def discover_files(state: ScanState) -> ScanState:
     """
-    Node 1: Discover all code files to scan.
+    Node 1: Discover all source Python files to scan.
 
-    Walks the directory tree and finds all Python files (excluding venv, cache).
+    Skips compiled bytecode (.pyc/.pyo/.pyd) and well-known non-source
+    directories (__pycache__, venv, .git, etc.).
     """
     print(f"🔍 [DISCOVER] Scanning directory: {state['root_dir']}")
 
@@ -96,7 +104,11 @@ def discover_files(state: ScanState) -> ScanState:
     files = []
 
     for file_path in root_path.rglob("*.py"):
-        if "venv" in str(file_path) or "__pycache__" in str(file_path):
+        # Skip any path that passes through a blocked directory
+        if any(part in _SKIP_DIRS for part in file_path.parts):
+            continue
+        # Belt-and-suspenders: skip compiled extensions even if glob matched
+        if file_path.suffix in _SKIP_EXTS:
             continue
         files.append(str(file_path.relative_to(root_path)))
 
@@ -506,13 +518,15 @@ def generate_report(state: ScanState) -> ScanState:
     """
     print("📝 [REPORT] Generating final report...")
 
+    raw_bundles = state.get("security_bundles", {})
     report = {
         "session_id": state["session_id"],
+        # Full domain → file-list mapping consumed by the frontend accordion
+        "security_bundles": dict(raw_bundles),
         "summary": {
             "total_files_scanned": len(state["files_to_scan"]),
             "security_bundles": {
-                domain: len(paths)
-                for domain, paths in state.get("security_bundles", {}).items()
+                domain: len(paths) for domain, paths in raw_bundles.items()
             },
             "files_with_issues": len(state["scan_results"]),
             "total_vulnerabilities": len(state["vulnerabilities"]),

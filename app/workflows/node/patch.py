@@ -103,21 +103,30 @@ def generate_patch(state: PatchState) -> PatchState:
                 logger.warning("[PATCH] Could not read bundle peer %s: %s", fp, e)
                 peer_parts.append(f"=== BUNDLE FILE: {fp} ===\n[Could not read: {e}]")
         bundle_section = (
-            "=== SECURITY DOMAIN BUNDLE CONTEXT ===\n"
-            "The vulnerability may span these peer files. Read them to understand "
+            "=== SECURITY DOMAIN BUNDLE CONTEXT (READ-ONLY) ===\n"
+            "These peer files are READ-ONLY reference material. Use them to understand "
             "cross-file data flows, variable types, and DB schemas before patching. "
-            "You may also apply `replace_function` or `replace_class_method` on any "
-            "of these files if the fix requires cross-file changes.\n\n"
+            "You are NOT authorized to modify any of these files.\n\n"
             + "\n\n".join(peer_parts)
             + "\n=== END BUNDLE CONTEXT ===\n\n"
         )
 
+    vuln_header = (
+        f"Fix the security vulnerabilities listed below in the PRIMARY TARGET FILE.\n\n"
+        f"**PRIMARY TARGET FILE (absolute path):** `{full_path}`\n\n"
+        f"**Reported vulnerabilities ({len(vulnerabilities)} total):**\n{vuln_summary}\n\n"
+        + (
+            f"Peer bundle files above are provided as READ-ONLY context. "
+            f"Your final `python` block MUST contain only the complete patched source "
+            f"of the primary target file — do NOT output code for any peer file.\n\n"
+            if peer_files else ""
+        )
+    )
+
     initial_message = (
         f"{golden_section}"
         f"{bundle_section}"
-        f"You must fix the security vulnerabilities listed below in the Python file.\n\n"
-        f"**File (absolute path):** `{full_path}`\n\n"
-        f"**Reported vulnerabilities:**\n{vuln_summary}\n\n"
+        f"{vuln_header}"
     )
 
     # NEW: Inject feedback if this is a retry

@@ -294,6 +294,7 @@ async def run_patch_generation(
     root_dir: str,
     cache_name: str = None,
     involved_files: list[str] = None,
+    vulnerabilities: list = None,
 ) -> str:
     """
     Generate a security patch using the LangGraph workflow.
@@ -305,6 +306,8 @@ async def run_patch_generation(
         cache_name: Optional Gemini cache name
         involved_files: All files in the originating security bundle; defaults
                         to [file_path] for single-file callers.
+        vulnerabilities: Pre-collected vulnerability list; when provided the
+                         ReAct agent is directed to fix every item in one pass.
 
     Returns:
         Patched code
@@ -315,7 +318,7 @@ async def run_patch_generation(
         "root_dir": root_dir,
         "cache_name": cache_name,
         "involved_files": involved_files if involved_files is not None else [file_path],
-        "vulnerabilities": [],
+        "vulnerabilities": vulnerabilities if vulnerabilities is not None else [],
         "original_code": "",
         "patched_code": "",
         "patch_applied": False,
