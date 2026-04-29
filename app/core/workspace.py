@@ -6,7 +6,7 @@ import zipfile
 from pathlib import Path
 from fastapi import UploadFile, HTTPException
 
-WORKSPACE_DIR = Path(os.getenv("WORKSPACE_DIR", "temp_workspaces"))
+from app.config.settings import WORKSPACE_DIR
 
 # Max upload size: 50 MB
 MAX_ZIP_SIZE_BYTES = 50 * 1024 * 1024

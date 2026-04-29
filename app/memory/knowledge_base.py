@@ -19,7 +19,8 @@ COLLECTION_NAME = "security_knowledge_base"
 
 class SecurityKnowledgeBase:
     def __init__(self):
-        host = os.getenv("CHROMA_HOST", "localhost")
+        from app.config.settings import CHROMA_HOST
+        host = CHROMA_HOST
         port = 8000 if host == "chromadb_server" else 8001
         try:
             self.client = chromadb.HttpClient(host=host, port=port)

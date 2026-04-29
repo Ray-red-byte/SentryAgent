@@ -4,6 +4,7 @@ import time
 import logging
 import google.generativeai as genai
 from langchain_google_genai import ChatGoogleGenerativeAI
+from app.config.settings import GEMINI_API_KEY
 
 from app.config.gemini import CACHE_MODEL, PREFERRED_MODELS, JSON_GENERATION_CONFIG
 
@@ -11,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 class GeminiClient:
     def __init__(self, model_name: str = None):
-        self.api_key = os.getenv("GEMINI_API_KEY")
+        self.api_key = GEMINI_API_KEY
         self.model = None
 
         if not self.api_key:
@@ -105,7 +106,7 @@ class GeminiClient:
         Used by create_react_agent() in the patcher subgraph.
         Selects the same preferred model as _auto_select_model().
         """
-        api_key = self.api_key or os.getenv("GEMINI_API_KEY", "")
+        api_key = GEMINI_API_KEY
         # Prefer gemini-2.5-flash as it's fast and supports tool-use well
         model_name = "gemini-2.5-flash"
         return ChatGoogleGenerativeAI(

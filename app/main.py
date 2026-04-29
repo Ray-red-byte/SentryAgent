@@ -1,15 +1,15 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.routes import router as api_router_v2
+from app.api.router import api_router as api_router_v2
 from app.databases.postgres import engine, Base
+from app.core.workspace import WorkspaceManager
 import os
 
 Base.metadata.create_all(bind=engine)
 
 # Only allow explicitly listed origins. Override via ALLOWED_ORIGINS env var
 # (comma-separated list). Never use "*" alongside allow_credentials=True.
-_raw_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:5173")
-ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+from app.config.settings import ALLOWED_ORIGINS
 
 app = FastAPI(
     title="Vibe Security Agent",
@@ -28,6 +28,9 @@ app.add_middleware(
 
 # Connect the new LangGraph Router (v2)
 app.include_router(api_router_v2, tags=["v2 - LangGraph"])
+
+# Init workspace at startup
+workspace_manager = WorkspaceManager()
 
 if __name__ == "__main__":
     import uvicorn

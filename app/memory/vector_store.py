@@ -2,19 +2,14 @@ import chromadb
 import os
 from app.core.parser.chunker import CodeChunker
 from app.utils.logger import get_logger
+from app.config.settings import CHROMA_HOST
 
 logger = get_logger(__name__)
 
 class CodebaseRAG:
     def __init__(self):
-        # MICROSERVICES LOGIC:
-        # Check if we are running in Docker (Env vars exist) or Local
-        host = os.getenv("CHROMA_HOST", "localhost")
-        
-        # If running in Docker, the host is 'chromadb_server' (port 8000)
-        # If running locally (outside docker), we hit localhost:8001
+        host = CHROMA_HOST
         port = 8000 if host == "chromadb_server" else 8001
-
         logger.info("Connecting to ChromaDB at %s:%s...", host, port)
         
         # Use HttpClient to talk to the Docker Container

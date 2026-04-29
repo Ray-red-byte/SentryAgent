@@ -3,12 +3,13 @@ import datetime
 import google.generativeai as genai
 from google.generativeai import caching
 from app.utils.logger import get_logger
+from app.config.settings import GEMINI_API_KEY
 
 logger = get_logger(__name__)
 
 class GeminiCacheManager:
-    def __init__(self, api_key=None):
-        self.api_key = api_key or os.getenv("GEMINI_API_KEY")
+    def __init__(self):
+        self.api_key = GEMINI_API_KEY
         
         if not self.api_key:
             logger.critical("GEMINI_API_KEY is missing. Caching will fail.")

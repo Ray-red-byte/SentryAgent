@@ -1,6 +1,7 @@
 # app/databases/redis.py
 import redis
 import os
+from app.config.settings import REDIS_HOST, REDIS_PORT
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -11,8 +12,8 @@ class RedisClient:
     @property
     def client(self):
         if self._client is None:
-            host = os.getenv("REDIS_HOST", "localhost")
-            port = int(os.getenv("REDIS_PORT", 6379))
+            host = REDIS_HOST
+            port = REDIS_PORT
             try:
                 self._client = redis.Redis(
                     host=host,

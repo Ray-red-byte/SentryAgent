@@ -13,6 +13,7 @@ import uuid
 import chromadb
 from app.knowledge.security import KNOWLEDGE_ENTRIES
 from app.utils.logger import get_logger
+from app.config.settings import CHROMA_HOST
 
 logger = get_logger(__name__)
 
@@ -24,7 +25,7 @@ COLLECTION_NAME = "security_knowledge_base"
 
 def seed(force: bool = False):
     """Seed the ChromaDB knowledge base. Skips if already seeded (unless force=True)."""
-    host = os.getenv("CHROMA_HOST", "localhost")
+    host = CHROMA_HOST
     port = 8000 if host == "chromadb_server" else 8001
 
     logger.info("Connecting to ChromaDB at %s:%s…", host, port)
