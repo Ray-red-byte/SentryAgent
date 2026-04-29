@@ -371,7 +371,7 @@ function App() {
                             return (
                               <button
                                 key={fp}
-                                onClick={() => selectSingleFile({ file: fp, file_path: fp, risk_score: riskScore })}
+                                onClick={() => selectSingleFile({ file: fp, file_path: fp, risk_score: riskScore, parentBundleName: domain })}
                                 className={`w-full text-left px-3 py-2 flex items-center gap-2 transition-all
                                   ${isFileSelected
                                     ? 'bg-sentry-accent/10 text-sentry-accent'

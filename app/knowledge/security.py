@@ -1,333 +1,379 @@
 """
 app/knowledge/security.py
 
-This module defines the SecurityKnowledgeBase class, which serves as a long-term organizational memory 
-for cybersecurity knowledge. It uses ChromaDB to store and 
-retrieve information about 
- 1. vulnerabilities
- 2. attack patterns
- 3. mitigation strategies.
+Curated OWASP Top 10 + CWE cybersecurity knowledge entries used to pre-seed
+the ChromaDB vector store. Each entry is a dict with keys:
+    type, cwe, owasp, severity, description, detection, fix
 """
 
 KNOWLEDGE_ENTRIES = [
-    # ── OWASP A01 — Injection ─────────────────────────────────────────
     {
         "type": "SQL Injection",
         "cwe": "CWE-89",
-        "owasp": "A01:2021",
+        "owasp": "A03:2021",
         "severity": "CRITICAL",
         "description": (
-            "SQL Injection occurs when user-controlled input is concatenated directly "
-            "into SQL queries without parameterization. An attacker can manipulate the "
-            "query to dump, modify, or delete database contents, bypass authentication, "
-            "or execute OS commands via DB stored procedures."
+            "User-controlled input is concatenated directly into a SQL query without "
+            "parameterisation, allowing an attacker to alter the query logic, dump data, "
+            "or execute admin operations."
         ),
         "detection": (
-            "Look for: f-strings in SQL queries, string concatenation with user input, "
-            "execute() calls with % formatting, raw string interpolation in ORM queries."
+            "Look for string formatting (f-string, %-format, .format()) or concatenation "
+            "used to build SQL strings. Trigger: cursor.execute(f'... {var} ...') or "
+            "query = 'SELECT ... WHERE x = ' + user_input."
         ),
         "fix": (
-            "Always use parameterized queries or ORM methods:\n"
-            "BAD:  cursor.execute(f\"SELECT * FROM users WHERE id = {user_id}\")\n"
-            "GOOD: cursor.execute('SELECT * FROM users WHERE id = %s', (user_id,))\n"
-            "GOOD (SQLAlchemy): db.query(User).filter(User.id == user_id).first()\n"
-            "Never format SQL with user input. Use allowlists for dynamic column names."
+            "Replace string interpolation with parameterised queries:\n"
+            "  # BAD\n"
+            "  cursor.execute(f\"SELECT * FROM users WHERE id = {user_id}\")\n"
+            "  # GOOD\n"
+            "  cursor.execute(\"SELECT * FROM users WHERE id = %s\", (user_id,))\n"
+            "For ORMs use query builder methods (filter(), where()) instead of raw()."
         ),
     },
     {
         "type": "Command Injection",
         "cwe": "CWE-78",
-        "owasp": "A01:2021",
-        "severity": "CRITICAL",
-        "description": (
-            "Command Injection allows an attacker to execute arbitrary OS commands "
-            "on the host server by injecting shell metacharacters into input that is "
-            "passed to os.system(), subprocess.call(shell=True), or similar functions."
-        ),
-        "detection": (
-            "Look for: os.system(), os.popen(), subprocess.run/call/Popen with shell=True, "
-            "eval(), exec() with user-controlled strings."
-        ),
-        "fix": (
-            "BAD:  os.system(f'ls {user_input}')\n"
-            "GOOD: subprocess.run(['ls', user_input], shell=False, check=True)\n"
-            "Never pass user input to shell=True. Use shell=False with a list of args. "
-            "Validate and allowlist all inputs that interact with the OS."
-        ),
-    },
-    {
-        "type": "Code Injection",
-        "cwe": "CWE-94",
-        "owasp": "A01:2021",
-        "severity": "CRITICAL",
-        "description": (
-            "Code injection allows attackers to inject and execute arbitrary code "
-            "via eval(), exec(), or pickle.loads() on untrusted data."
-        ),
-        "detection": "Look for eval(), exec(), compile(), pickle.loads(), marshal.loads() with untrusted input.",
-        "fix": (
-            "BAD:  result = eval(user_code)\n"
-            "GOOD: Use ast.literal_eval() for safe evaluation of literals only.\n"
-            "Never deserialize untrusted pickle data — use JSON instead.\n"
-            "If dynamic code execution is truly required, isolate it in a sandboxed subprocess."
-        ),
-    },
-    # ── OWASP A02 — Broken Authentication ────────────────────────────
-    {
-        "type": "Broken Authentication",
-        "cwe": "CWE-287",
-        "owasp": "A02:2021",
-        "severity": "CRITICAL",
-        "description": (
-            "Authentication flaws allow attackers to compromise passwords, keys, or "
-            "session tokens. Common issues: hardcoded credentials, weak JWT secrets, "
-            "missing token expiry, tokens stored in plaintext logs."
-        ),
-        "detection": (
-            "Look for: hardcoded password strings, JWT secrets in source code, "
-            "missing token validation, always-true authentication stubs, "
-            "comparing password hashes insecurely."
-        ),
-        "fix": (
-            "Use strong randomly generated secrets (32+ bytes) from environment variables.\n"
-            "Always validate JWT tokens cryptographically (algorithm, signature, expiry).\n"
-            "Store passwords with bcrypt/argon2, never MD5/SHA1.\n"
-            "Example JWT validation:\n"
-            "  payload = jwt.decode(token, SECRET, algorithms=['HS256'])\n"
-            "  # This raises ExpiredSignatureError or InvalidTokenError automatically."
-        ),
-    },
-    {
-        "type": "Hardcoded Credentials",
-        "cwe": "CWE-798",
-        "owasp": "A02:2021",
-        "severity": "HIGH",
-        "description": (
-            "Hardcoded credentials in source code can be extracted by anyone with "
-            "repository access and are nearly impossible to rotate without a code deploy."
-        ),
-        "detection": "Look for: password =, secret =, api_key = assigned to string literals in source files.",
-        "fix": (
-            "Load all credentials from environment variables:\n"
-            "  SECRET = os.environ['SECRET_KEY']  # raises KeyError if missing — good!\n"
-            "  SECRET = os.getenv('SECRET_KEY')   # returns None — add a None check\n"
-            "Use python-dotenv for local dev. Never commit .env to version control."
-        ),
-    },
-    # ── OWASP A03 — Path Traversal ────────────────────────────────────
-    {
-        "type": "Path Traversal",
-        "cwe": "CWE-22",
         "owasp": "A03:2021",
         "severity": "CRITICAL",
         "description": (
-            "Path traversal allows an attacker to access files outside the intended "
-            "directory by injecting ../ sequences. In file upload/download endpoints, "
-            "this can expose /etc/passwd, private keys, or allow overwriting system files."
+            "User-supplied data flows into a shell command (os.system, subprocess with "
+            "shell=True, eval, exec) allowing arbitrary OS command execution."
         ),
         "detection": (
-            "Look for: open(user_path), os.path.join(base, user_input) without resolve(), "
-            "zipfile.extractall() without member path validation (ZipSlip)."
+            "Search for: os.system(, subprocess.run(... shell=True, eval(, exec(. "
+            "Check whether any argument contains user-controlled data."
         ),
         "fix": (
-            "Always resolve and validate paths:\n"
-            "  safe_path = (base_dir / user_input).resolve()\n"
-            "  if not str(safe_path).startswith(str(base_dir.resolve()) + os.sep):\n"
-            "      raise HTTPException(400, 'Invalid path')\n"
-            "For ZipSlip: validate each zip member path before extraction."
+            "Use subprocess with a list of arguments and shell=False:\n"
+            "  # BAD\n"
+            "  os.system(f'convert {filename}')\n"
+            "  # GOOD\n"
+            "  subprocess.run(['convert', filename], shell=False, check=True)\n"
+            "Never pass user input to eval() or exec()."
         ),
     },
-    # ── OWASP A04 — Insecure Design / IDOR ───────────────────────────
     {
-        "type": "Insecure Direct Object Reference (IDOR)",
-        "cwe": "CWE-639",
+        "type": "Path Traversal",
+        "cwe": "CWE-22",
         "owasp": "A01:2021",
         "severity": "HIGH",
         "description": (
-            "IDOR occurs when an application uses user-supplied input (like an ID) "
-            "to access objects without verifying the caller is authorized to access them."
+            "User-controlled path components (e.g. '../../../etc/passwd') allow reading "
+            "or writing files outside the intended directory."
         ),
-        "detection": "Look for: endpoints that fetch records by ID without checking if the ID belongs to the current user.",
+        "detection": (
+            "Look for open(), os.path.join(), or file operations where the path argument "
+            "includes a request parameter without normalisation or prefix checking."
+        ),
         "fix": (
-            "Always scope queries to the authenticated user:\n"
-            "  BAD:  record = db.query(Record).filter(Record.id == record_id).first()\n"
-            "  GOOD: record = db.query(Record).filter(\n"
-            "            Record.id == record_id,\n"
-            "            Record.owner_id == current_user['id']\n"
-            "        ).first()"
+            "Resolve and validate the path before use:\n"
+            "  import os\n"
+            "  BASE = '/var/app/uploads'\n"
+            "  safe = os.path.realpath(os.path.join(BASE, user_filename))\n"
+            "  if not safe.startswith(BASE + os.sep):\n"
+            "      raise ValueError('Path traversal detected')\n"
+            "  with open(safe) as f: ..."
         ),
     },
-    # ── OWASP A05 — Security Misconfiguration ─────────────────────────
     {
-        "type": "CORS Misconfiguration",
-        "cwe": "CWE-942",
-        "owasp": "A05:2021",
+        "type": "Broken Authentication",
+        "cwe": "CWE-287",
+        "owasp": "A07:2021",
+        "severity": "CRITICAL",
+        "description": (
+            "Authentication mechanisms are missing, bypassable, or improperly implemented — "
+            "e.g. hardcoded credentials, missing token validation, or predictable session IDs."
+        ),
+        "detection": (
+            "Search for: hardcoded passwords, missing @login_required / Depends(get_current_user), "
+            "JWT verification skipped (verify=False), or compare_digest not used for token comparison."
+        ),
+        "fix": (
+            "Enforce authentication on every protected route:\n"
+            "  # FastAPI example\n"
+            "  @router.get('/admin')\n"
+            "  async def admin(user=Depends(get_current_user)):\n"
+            "      ...\n"
+            "Use hmac.compare_digest() for constant-time token comparison. "
+            "Store passwords with bcrypt/argon2, never plaintext or MD5/SHA1."
+        ),
+    },
+    {
+        "type": "Broken Access Control",
+        "cwe": "CWE-284",
+        "owasp": "A01:2021",
         "severity": "HIGH",
         "description": (
-            "Using allow_origins=['*'] with allow_credentials=True is invalid per the "
-            "CORS spec and allows any website to make credentialed requests to your API "
-            "using the victim's browser cookies/tokens."
+            "The application does not verify that the authenticated user is authorised to "
+            "access the requested resource, enabling Insecure Direct Object Reference (IDOR) "
+            "or privilege escalation attacks."
         ),
-        "detection": "Look for: allow_origins=['*'] combined with allow_credentials=True in CORS middleware.",
+        "detection": (
+            "Check whether object lookups use only the user-supplied ID without also "
+            "filtering by the authenticated user's ID or role. E.g. "
+            "db.query(Order).filter(Order.id == order_id) without owner check."
+        ),
         "fix": (
-            "Use an explicit allowlist:\n"
-            "  origins = os.getenv('ALLOWED_ORIGINS', 'http://localhost:3000').split(',')\n"
-            "  app.add_middleware(CORSMiddleware,\n"
-            "      allow_origins=origins, allow_credentials=True,\n"
-            "      allow_methods=['GET','POST'], allow_headers=['Authorization','Content-Type'])"
+            "Always scope queries to the authenticated principal:\n"
+            "  # BAD — any user can read any order\n"
+            "  order = db.query(Order).filter(Order.id == order_id).first()\n"
+            "  # GOOD — scope to authenticated user\n"
+            "  order = db.query(Order).filter(\n"
+            "      Order.id == order_id,\n"
+            "      Order.user_id == current_user.id\n"
+            "  ).first()\n"
+            "  if not order:\n"
+            "      raise HTTPException(status_code=404)"
         ),
     },
-    # ── OWASP A06 — Vulnerable and Outdated Components ────────────────
+    {
+        "type": "Sensitive Data Exposure",
+        "cwe": "CWE-312",
+        "owasp": "A02:2021",
+        "severity": "HIGH",
+        "description": (
+            "Sensitive data (passwords, tokens, PII, credit card numbers) is stored or "
+            "transmitted in cleartext, logged, or included in API responses."
+        ),
+        "detection": (
+            "Search for password/secret fields returned in API responses, logged with "
+            "logger.info/print, or stored without hashing. Look for 'password' in response "
+            "serialisers or SELECT * queries whose result is returned directly."
+        ),
+        "fix": (
+            "Exclude secrets from serialisation and logs:\n"
+            "  class UserOut(BaseModel):\n"
+            "      id: int\n"
+            "      email: str\n"
+            "      # no 'password' field\n"
+            "Hash passwords with bcrypt before storage. "
+            "Use response_model=UserOut in FastAPI to strip sensitive fields automatically."
+        ),
+    },
+    {
+        "type": "Hardcoded Secrets",
+        "cwe": "CWE-798",
+        "owasp": "A02:2021",
+        "severity": "CRITICAL",
+        "description": (
+            "Secret keys, API tokens, database passwords, or cryptographic keys are "
+            "embedded directly in source code rather than read from environment variables "
+            "or a secrets manager."
+        ),
+        "detection": (
+            "Grep for patterns like: SECRET_KEY = 'abc', password = 'pass', "
+            "API_KEY = 'sk-...', token = 'Bearer xyz' that are string literals rather "
+            "than os.getenv() calls."
+        ),
+        "fix": (
+            "Move secrets to environment variables:\n"
+            "  # BAD\n"
+            "  SECRET_KEY = 'super_secret_123'\n"
+            "  # GOOD\n"
+            "  import os\n"
+            "  SECRET_KEY = os.environ['SECRET_KEY']  # raises if missing — intentional\n"
+            "Use python-dotenv in dev and a secrets manager (Vault, AWS SSM) in prod."
+        ),
+    },
+    {
+        "type": "Cross-Site Scripting (XSS)",
+        "cwe": "CWE-79",
+        "owasp": "A03:2021",
+        "severity": "HIGH",
+        "description": (
+            "User-supplied data is rendered in HTML responses without escaping, allowing "
+            "injection of malicious scripts that execute in the victim's browser."
+        ),
+        "detection": (
+            "In Jinja2 templates look for {{ var | safe }} or Markup(user_input). "
+            "In Python look for HTMLResponse(content=f'<p>{user_input}</p>') where "
+            "user_input is not escaped."
+        ),
+        "fix": (
+            "Always escape untrusted data before rendering in HTML:\n"
+            "  from markupsafe import escape\n"
+            "  safe_name = escape(user_input)\n"
+            "  return HTMLResponse(f'<p>{safe_name}</p>')\n"
+            "Prefer Jinja2 auto-escaping (enabled by default) and never use | safe "
+            "on user-controlled values."
+        ),
+    },
     {
         "type": "Insecure Deserialization",
         "cwe": "CWE-502",
         "owasp": "A08:2021",
         "severity": "CRITICAL",
         "description": (
-            "Deserializing untrusted data with pickle, marshal, or yaml.load() can "
-            "lead to arbitrary code execution because these formats support object "
-            "instantiation during deserialization."
+            "Untrusted data is deserialised using pickle, yaml.load, marshal, or similar "
+            "unsafe deserializers, enabling remote code execution."
         ),
-        "detection": "Look for: pickle.loads(), yaml.load() (not safe_load), marshal.loads() with external data.",
+        "detection": (
+            "Search for: pickle.loads(, yaml.load( (without Loader=yaml.SafeLoader), "
+            "marshal.loads(, shelve.open( where the source data originates from user input "
+            "or network data."
+        ),
         "fix": (
-            "BAD:  data = pickle.loads(user_bytes)\n"
-            "GOOD: data = json.loads(user_string)  # JSON cannot execute code\n"
-            "For YAML: always use yaml.safe_load() — never yaml.load().\n"
-            "Never deserialize data from untrusted sources with pickle."
+            "Use safe alternatives:\n"
+            "  # BAD\n"
+            "  obj = pickle.loads(request.body)\n"
+            "  data = yaml.load(user_string)\n"
+            "  # GOOD\n"
+            "  import json\n"
+            "  data = json.loads(request.body)  # for structured data\n"
+            "  data = yaml.safe_load(user_string)  # for YAML\n"
+            "Never deserialise pickle/marshal data from untrusted sources."
         ),
     },
-    # ── OWASP A07 — Identification & Authentication Failures ──────────
     {
-        "type": "Missing Authentication on Sensitive Endpoint",
-        "cwe": "CWE-306",
-        "owasp": "A07:2021",
-        "severity": "CRITICAL",
-        "description": (
-            "API endpoints that modify data, expose PII, or trigger expensive operations "
-            "must require authentication. Unauthenticated endpoints are trivially abused."
-        ),
-        "detection": "Look for: POST/PUT/DELETE route handlers that don't have Depends(get_current_user) or equivalent.",
-        "fix": (
-            "Add authentication dependency to every sensitive route:\n"
-            "  @router.post('/sensitive', dependencies=[Depends(get_current_user)])\n"
-            "  async def sensitive_endpoint(request: Request): ..."
-        ),
-    },
-    # ── OWASP A08 — Sensitive Data Exposure ──────────────────────────
-    {
-        "type": "Sensitive Data Exposure in Error Responses",
-        "cwe": "CWE-209",
-        "owasp": "A09:2021",
+        "type": "Security Misconfiguration",
+        "cwe": "CWE-16",
+        "owasp": "A05:2021",
         "severity": "MEDIUM",
         "description": (
-            "Returning raw exception messages in HTTP error responses leaks internal "
-            "information: stack traces, file paths, SQL queries, library versions — "
-            "all useful to an attacker for reconnaissance."
+            "Debug mode is enabled in production, CORS is overly permissive (allow_origins=['*']), "
+            "detailed error tracebacks are exposed to clients, or default credentials are unchanged."
         ),
-        "detection": "Look for: raise HTTPException(detail=str(e)) — this sends internal exception messages to users.",
+        "detection": (
+            "Look for: DEBUG=True, allow_origins=['*'] in CORSMiddleware, "
+            "app.run(debug=True), expose_headers with sensitive headers, "
+            "or error handlers that return stack traces."
+        ),
         "fix": (
-            "Log internally, return generic message:\n"
-            "  except Exception as e:\n"
-            "      logger.exception('Internal error in endpoint: %s', e)\n"
-            "      raise HTTPException(status_code=500, detail='An internal error occurred.')"
+            "Harden configuration for production:\n"
+            "  # CORS — restrict to known origins\n"
+            "  app.add_middleware(CORSMiddleware,\n"
+            "      allow_origins=['https://app.example.com'],\n"
+            "      allow_credentials=True,\n"
+            "      allow_methods=['GET', 'POST'],\n"
+            "  )\n"
+            "  # Disable debug in prod\n"
+            "  DEBUG = os.getenv('DEBUG', 'false').lower() == 'true'"
         ),
     },
-    # ── OWASP A09 — Logging Failures ─────────────────────────────────
     {
-        "type": "Insufficient Logging",
-        "cwe": "CWE-778",
-        "owasp": "A09:2021",
-        "severity": "LOW",
+        "type": "Rate Limiting Missing",
+        "cwe": "CWE-400",
+        "owasp": "A05:2021",
+        "severity": "MEDIUM",
         "description": (
-            "Without structured security logs for authentication failures, "
-            "authorization errors, and input validation failures, attacks go undetected."
+            "Authentication endpoints or expensive operations lack rate limiting, "
+            "enabling brute-force attacks, credential stuffing, or denial-of-service."
         ),
-        "detection": "Look for: authentication or authorization code with no logging on failure paths.",
+        "detection": (
+            "Look for login, password-reset, or token endpoints that have no "
+            "slowapi @limiter.limit, no Redis-backed counter, and no account lockout logic."
+        ),
         "fix": (
-            "Log all security-relevant events:\n"
-            "  logger.warning('Failed login for user %s from IP %s', username, client_ip)\n"
-            "  logger.warning('Authorization denied: user %s tried to access %s', user_id, resource)\n"
-            "Use structured logging (JSON) in production for SIEM ingestion."
+            "Add rate limiting with slowapi or a Redis counter:\n"
+            "  from slowapi import Limiter\n"
+            "  from slowapi.util import get_remote_address\n"
+            "  limiter = Limiter(key_func=get_remote_address)\n\n"
+            "  @router.post('/login')\n"
+            "  @limiter.limit('5/minute')\n"
+            "  async def login(request: Request, ...):\n"
+            "      ..."
         ),
     },
-    # ── OWASP A10 — SSRF ─────────────────────────────────────────────
     {
         "type": "Server-Side Request Forgery (SSRF)",
         "cwe": "CWE-918",
         "owasp": "A10:2021",
         "severity": "HIGH",
         "description": (
-            "SSRF allows attackers to make the server fetch arbitrary URLs, "
-            "potentially reaching internal services (AWS metadata, Redis, DB) "
-            "that are not exposed externally."
+            "The application fetches a remote URL supplied by the user without validating "
+            "the target, allowing attackers to reach internal services (metadata APIs, "
+            "Redis, internal HTTP endpoints)."
         ),
-        "detection": "Look for: requests.get(user_url), httpx.get(user_url) without URL validation.",
+        "detection": (
+            "Look for: requests.get(user_url), httpx.get(url) where url comes from "
+            "request parameters, with no allowlist validation of the scheme or host."
+        ),
         "fix": (
-            "Validate URLs against an allowlist of permitted domains/IPs:\n"
+            "Validate the URL against an allowlist before fetching:\n"
             "  from urllib.parse import urlparse\n"
-            "  parsed = urlparse(url)\n"
-            "  if parsed.hostname not in ALLOWED_HOSTS:\n"
-            "      raise HTTPException(400, 'URL not permitted')\n"
-            "Block private IP ranges (10.x, 172.16.x, 192.168.x, 169.254.x) entirely."
+            "  ALLOWED_HOSTS = {'api.example.com', 'cdn.example.com'}\n"
+            "  parsed = urlparse(user_url)\n"
+            "  if parsed.scheme not in ('http', 'https') or parsed.hostname not in ALLOWED_HOSTS:\n"
+            "      raise HTTPException(status_code=400, detail='URL not allowed')\n"
+            "  response = requests.get(user_url, timeout=5)"
         ),
     },
-    # ── Upload Security ───────────────────────────────────────────────
     {
-        "type": "Unrestricted File Upload",
-        "cwe": "CWE-434",
-        "owasp": "A01:2021",
+        "type": "Mass Assignment",
+        "cwe": "CWE-915",
+        "owasp": "A04:2021",
         "severity": "HIGH",
         "description": (
-            "Accepting file uploads without validating type, size, or content "
-            "allows attackers to upload server-side scripts, DoS via large files, "
-            "or overwrite critical files (combined with path traversal)."
+            "A model is created or updated directly from raw request data "
+            "(e.g. **request.json()), allowing attackers to set internal fields such as "
+            "is_admin, role, or account_balance."
         ),
-        "detection": "Look for: file upload handlers with no size limit, no type check, no content validation.",
+        "detection": (
+            "Look for ORM model(**request_dict) or model.update(**payload) where the "
+            "payload is the raw request body without explicit field filtering."
+        ),
         "fix": (
-            "Validate type, size, and content:\n"
-            "  MAX_SIZE = 50 * 1024 * 1024  # 50 MB\n"
-            "  if not file.filename.endswith('.zip'): raise HTTPException(400, 'Only .zip allowed')\n"
-            "  content = await file.read(MAX_SIZE + 1)\n"
-            "  if len(content) > MAX_SIZE: raise HTTPException(413, 'File too large')\n"
-            "Store uploads in an isolated directory, never executable paths."
+            "Use an explicit input schema and never pass raw dicts to ORM constructors:\n"
+            "  class UserCreate(BaseModel):\n"
+            "      username: str\n"
+            "      email: EmailStr\n"
+            "      password: str\n"
+            "      # no is_admin, role, etc.\n\n"
+            "  user = User(\n"
+            "      username=data.username,\n"
+            "      email=data.email,\n"
+            "      hashed_password=hash_password(data.password),\n"
+            "  )"
         ),
     },
-    # ── Rate Limiting / DoS ───────────────────────────────────────────
     {
-        "type": "Missing Rate Limiting",
-        "cwe": "CWE-770",
+        "type": "Weak Cryptography",
+        "cwe": "CWE-327",
+        "owasp": "A02:2021",
+        "severity": "HIGH",
+        "description": (
+            "Broken or weak cryptographic algorithms (MD5, SHA1, DES, RC4) are used for "
+            "hashing passwords or encrypting sensitive data, making them trivially reversible."
+        ),
+        "detection": (
+            "Search for: hashlib.md5(, hashlib.sha1( used on passwords, "
+            "Crypto.Cipher.DES, or short/static IV values in AES-CBC usage."
+        ),
+        "fix": (
+            "Use modern, purpose-fit algorithms:\n"
+            "  # Password hashing — use bcrypt or argon2\n"
+            "  from passlib.context import CryptContext\n"
+            "  pwd_ctx = CryptContext(schemes=['bcrypt'], deprecated='auto')\n"
+            "  hashed = pwd_ctx.hash(plain_password)\n\n"
+            "  # General data hashing — use SHA-256+\n"
+            "  import hashlib\n"
+            "  digest = hashlib.sha256(data).hexdigest()"
+        ),
+    },
+    {
+        "type": "XML External Entity (XXE)",
+        "cwe": "CWE-611",
         "owasp": "A05:2021",
-        "severity": "MEDIUM",
-        "description": (
-            "Without rate limiting, brute-force attacks against login endpoints, "
-            "or resource exhaustion via expensive AI/scan endpoints are trivial."
-        ),
-        "detection": "Look for: authentication or AI-triggered endpoints with no rate limiting middleware.",
-        "fix": (
-            "Add rate limiting with slowapi or similar:\n"
-            "  from slowapi import Limiter\n"
-            "  limiter = Limiter(key_func=get_remote_address)\n"
-            "  @app.post('/login')\n"
-            "  @limiter.limit('5/minute')\n"
-            "  async def login(request: Request): ..."
-        ),
-    },
-    # ── FastAPI/Python Specific ────────────────────────────────────────
-    {
-        "type": "UUID / Session ID Validation",
-        "cwe": "CWE-20",
-        "owasp": "A03:2021",
         "severity": "HIGH",
         "description": (
-            "Using unvalidated session IDs in filesystem paths allows attackers "
-            "to inject path traversal sequences or access other users' sessions."
+            "The XML parser is configured to resolve external entities, allowing attackers "
+            "to read arbitrary files from the server or trigger SSRF via crafted XML."
         ),
-        "detection": "Look for: os.path.join(base, session_id) without validating session_id is a UUID.",
+        "detection": (
+            "Look for lxml.etree.parse(, xml.etree.ElementTree.parse(, "
+            "or defusedxml not being used. Check whether resolve_entities=True is set."
+        ),
         "fix": (
-            "Validate session_id against UUID format before use:\n"
-            "  import re\n"
-            "  UUID4_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')\n"
-            "  if not UUID4_RE.match(session_id): raise HTTPException(400, 'Invalid session')"
+            "Use defusedxml or disable external entity resolution:\n"
+            "  # Use defusedxml instead of stdlib xml\n"
+            "  import defusedxml.ElementTree as ET\n"
+            "  tree = ET.parse(user_xml_stream)\n\n"
+            "  # Or with lxml, disable network and DTD loading\n"
+            "  parser = lxml.etree.XMLParser(\n"
+            "      resolve_entities=False, no_network=True, load_dtd=False\n"
+            "  )\n"
+            "  tree = lxml.etree.parse(source, parser)"
         ),
     },
 ]

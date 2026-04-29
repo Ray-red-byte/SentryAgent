@@ -3,8 +3,8 @@ import api, { tokenStore } from '../api';
 import { useTaskContext } from '../context/TaskContext';
 import {
     ShieldAlert, Wrench, MessageSquare, Send, User, Bot,
-    Play, Loader2, Save, CheckCircle, Download, RefreshCw,
-    AlertCircle, Info, ChevronRight, ChevronDown, FileText, Layers,
+    Play, Loader2, CheckCircle, Download, RefreshCw,
+    Info, ChevronRight, ChevronDown, FileText, Layers,
 } from 'lucide-react';
 
 // ── Severity helpers ────────────────────────────────────────────────────────
@@ -93,11 +93,10 @@ function VulnCard({ vuln, showFile = false }) {
     );
 }
 
-// ── Bundle results: findings grouped by file ──────────────────────────────
-function BundleResults({ report }) {
+// ── Bundle results: findings grouped by file, with per-file resolved state ──
+function BundleResults({ report, resolvedFiles = {} }) {
     const [expandedFiles, setExpandedFiles] = useState({});
 
-    // Group by file, preserving severity order within each group
     const grouped = report
         .filter(v => v.severity !== 'ERROR')
         .reduce((acc, vuln) => {
@@ -107,8 +106,11 @@ function BundleResults({ report }) {
             return acc;
         }, {});
 
-    // Sort files by their worst severity
-    const sortedFiles = Object.entries(grouped).sort(([, aVulns], [, bVulns]) => {
+    const sortedFiles = Object.entries(grouped).sort(([aFp, aVulns], [bFp, bVulns]) => {
+        // Resolved files sink to the bottom
+        const aResolved = Boolean(resolvedFiles[aFp]);
+        const bResolved = Boolean(resolvedFiles[bFp]);
+        if (aResolved !== bResolved) return aResolved ? 1 : -1;
         const worstIdx = (vulns) =>
             Math.min(...vulns.map(v => SEVERITY_ORDER.indexOf(v.severity?.toUpperCase() || 'INFO')));
         return worstIdx(aVulns) - worstIdx(bVulns);
@@ -117,48 +119,89 @@ function BundleResults({ report }) {
     const toggleFile = (fp) =>
         setExpandedFiles(prev => ({ ...prev, [fp]: !prev[fp] }));
 
-    // Start all expanded
     useEffect(() => {
         const init = {};
         sortedFiles.forEach(([fp]) => { init[fp] = true; });
         setExpandedFiles(init);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [report]);
 
     if (sortedFiles.length === 0) return null;
 
     return (
-        <div className="space-y-3">
+        <div className="space-y-2.5">
             {sortedFiles.map(([filePath, vulns]) => {
-                const worstSeverity = SEVERITY_ORDER.find(s => vulns.some(v => v.severity?.toUpperCase() === s)) || 'INFO';
+                const isResolved = Boolean(resolvedFiles[filePath]);
+                const patchedCode = resolvedFiles[filePath]?.patchedCode;
+                const worstSeverity = isResolved
+                    ? null
+                    : SEVERITY_ORDER.find(s => vulns.some(v => v.severity?.toUpperCase() === s)) || 'INFO';
                 const isOpen = expandedFiles[filePath] !== false;
 
                 return (
-                    <div key={filePath} className="rounded-xl border border-gray-700 overflow-hidden">
-                        {/* File sub-header */}
+                    <div
+                        key={filePath}
+                        className={`rounded-xl border overflow-hidden transition-colors ${isResolved ? 'border-green-500/30' : 'border-gray-700'
+                            }`}
+                    >
+                        {/* File header row */}
                         <button
                             onClick={() => toggleFile(filePath)}
-                            className="w-full flex items-center gap-2.5 px-4 py-2.5 bg-gray-800/60 hover:bg-gray-800 transition-colors text-left"
+                            className={`w-full flex items-center gap-2.5 px-4 py-2.5 transition-colors text-left ${isResolved
+                                ? 'bg-green-900/20 hover:bg-green-900/30'
+                                : 'bg-gray-800/60 hover:bg-gray-800'
+                                }`}
                         >
                             {isOpen
                                 ? <ChevronDown size={13} className="flex-none text-gray-400" />
                                 : <ChevronRight size={13} className="flex-none text-gray-400" />
                             }
-                            <FileText size={13} className="flex-none text-gray-400" />
-                            <span className="font-mono text-xs text-gray-200 truncate flex-1">{filePath}</span>
+                            <FileText size={13} className={`flex-none ${isResolved ? 'text-green-400' : 'text-gray-400'}`} />
+                            <span className={`font-mono text-xs truncate flex-1 ${isResolved ? 'text-green-200' : 'text-gray-200'}`}>
+                                {filePath}
+                            </span>
                             <div className="flex items-center gap-2 flex-none">
-                                <span className="text-[10px] text-gray-500">{vulns.length} finding{vulns.length !== 1 ? 's' : ''}</span>
-                                <SeverityBadge severity={worstSeverity} />
+                                {isResolved ? (
+                                    <span className="text-[10px] text-green-400 font-bold flex items-center gap-1">
+                                        <CheckCircle size={10} /> Secured
+                                    </span>
+                                ) : (
+                                    <>
+                                        <span className="text-[10px] text-gray-500">
+                                            {vulns.length} finding{vulns.length !== 1 ? 's' : ''}
+                                        </span>
+                                        <SeverityBadge severity={worstSeverity} />
+                                    </>
+                                )}
                             </div>
                         </button>
 
-                        {/* Findings for this file */}
+                        {/* Expanded body */}
                         {isOpen && (
-                            <div className="p-3 space-y-2.5 bg-gray-900/30">
-                                {vulns.map((vuln, idx) => (
-                                    <VulnCard key={idx} vuln={vuln} showFile={false} />
-                                ))}
-                            </div>
+                            isResolved ? (
+                                <div className="p-4 bg-green-900/10 space-y-3">
+                                    <div className="flex items-center gap-2 text-green-400 text-sm font-medium">
+                                        <CheckCircle size={15} />
+                                        <span>
+                                            Patch applied — {vulns.length} {vulns.length === 1 ? 'vulnerability' : 'vulnerabilities'} resolved
+                                        </span>
+                                    </div>
+                                    {patchedCode && (
+                                        <>
+                                            <p className="text-xs text-gray-500">Patched source:</p>
+                                            <pre className="text-xs font-mono bg-gray-950/70 border border-green-900/30 rounded-lg p-3 overflow-x-auto text-green-100/70 max-h-72 overflow-y-auto custom-scrollbar">
+                                                {patchedCode}
+                                            </pre>
+                                        </>
+                                    )}
+                                </div>
+                            ) : (
+                                <div className="p-3 space-y-2.5 bg-gray-900/30">
+                                    {vulns.map((vuln, idx) => (
+                                        <VulnCard key={idx} vuln={vuln} showFile={false} />
+                                    ))}
+                                </div>
+                            )
                         )}
                     </div>
                 );
@@ -170,37 +213,45 @@ function BundleResults({ report }) {
 // ── Main component ────────────────────────────────────────────────────────────
 const AuditWorkspace = ({ sessionId, file }) => {
     const [report, setReport] = useState([]);
-    const [fixedCode, setFixedCode] = useState(null);
+    const [resolvedFiles, setResolvedFiles] = useState({});
     const [chatHistory, setChatHistory] = useState([]);
     const [chatInput, setChatInput] = useState('');
     const [loading, setLoading] = useState(false);
     const [activeTab, setActiveTab] = useState('audit');
     const [hasAudited, setHasAudited] = useState(false);
-    const [applyState, setApplyState] = useState('idle'); // idle | applying | applied | error
     const [downloadUrl, setDownloadUrl] = useState(null);
     const [progress, setProgress] = useState(0);
     const [progressLabel, setProgressLabel] = useState('');
-    // null while idle; { total, current, currentFile, errors[], done } during sequential bundle fix
     const [bundleFixProgress, setBundleFixProgress] = useState(null);
-    const chatEndRef = useRef(null);
-    const runAuditRef = useRef(null);
 
-    // Per-file/bundle result cache
     const fileCache = useRef({});
     const currentFileRef = useRef(null);
+    const chatEndRef = useRef(null);
+    const progressTimerRef = useRef(null);
 
     const { activeTasks, startTask, endTask } = useTaskContext();
 
     // ── Derived values ──────────────────────────────────────────────────────
-    const isBundleMode = (file?.involved_files?.length ?? 0) > 1;
+    const isBundleMode = Boolean(file?.bundleName);
     const bundleName = file?.bundleName;
-    // Cache key: bundle name for bundles, file path for single-file
+    const parentBundleName = file?.parentBundleName;
     const cacheKey = bundleName || file?.file || file?.file_path;
-    // Primary file (used in /chat and /fix as the single-file target)
     const primaryFile = file?.file || file?.file_path;
 
-    // Progressive audit animation
-    const progressTimerRef = useRef(null);
+    const hasFindings = report.filter(v => v.severity !== 'ERROR').length > 0;
+
+    // All unique files that have findings
+    const filesWithFindings = isBundleMode
+        ? [...new Set(report.filter(v => v.severity !== 'ERROR').map(v => v.file || primaryFile))]
+        : [];
+
+    // True when every file that had a finding has been resolved
+    const allResolved =
+        hasFindings &&
+        filesWithFindings.length > 0 &&
+        filesWithFindings.every(fp => Boolean(resolvedFiles[fp]));
+
+    // ── Progress animation ──────────────────────────────────────────────────
     const startProgressAnimation = (startPct, endPct, label, durationMs) => {
         clearInterval(progressTimerRef.current);
         setProgressLabel(label);
@@ -214,27 +265,24 @@ const AuditWorkspace = ({ sessionId, file }) => {
         }, 200);
     };
 
-    // Restore from cache or reset when the selected file/bundle changes
+    // ── Cache restore/persist ───────────────────────────────────────────────
     useEffect(() => {
         if (!cacheKey) return;
-
         currentFileRef.current = cacheKey;
         clearInterval(progressTimerRef.current);
 
         const cached = fileCache.current[cacheKey];
         if (cached) {
             setReport(cached.report ?? []);
-            setFixedCode(cached.fixedCode ?? null);
+            setResolvedFiles(cached.resolvedFiles ?? {});
             setChatHistory(cached.chatHistory ?? []);
             setHasAudited(cached.hasAudited ?? false);
-            setApplyState(cached.applyState ?? 'idle');
             setDownloadUrl(cached.downloadUrl ?? null);
         } else {
             setReport([]);
-            setFixedCode(null);
+            setResolvedFiles({});
             setChatHistory([]);
             setHasAudited(false);
-            setApplyState('idle');
             setDownloadUrl(null);
         }
         setLoading(false);
@@ -244,42 +292,38 @@ const AuditWorkspace = ({ sessionId, file }) => {
         setBundleFixProgress(null);
     }, [cacheKey]);
 
-    // Persist state to cache
     useEffect(() => {
         if (!cacheKey) return;
-        fileCache.current[cacheKey] = { report, fixedCode, chatHistory, hasAudited, applyState, downloadUrl };
-    }, [cacheKey, report, fixedCode, chatHistory, hasAudited, applyState, downloadUrl]);
+        fileCache.current[cacheKey] = { report, resolvedFiles, chatHistory, hasAudited, downloadUrl };
+    }, [cacheKey, report, resolvedFiles, chatHistory, hasAudited, downloadUrl]);
 
-    // Auto-scroll chat
     useEffect(() => {
         chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [chatHistory, activeTab]);
 
-    // Clean up timer
     useEffect(() => () => clearInterval(progressTimerRef.current), []);
 
     // ── Actions ────────────────────────────────────────────────────────────────
 
     const runAudit = async () => {
-        if (loading || activeTasks[cacheKey]) return;
+        if (!isBundleMode || loading || activeTasks[cacheKey]) return;
         const thisKey = cacheKey;
         setLoading(true);
         setHasAudited(false);
         setReport([]);
+        setResolvedFiles({});
 
-        const label = isBundleMode
-            ? `AI analyzing ${file.involved_files.length} files in bundle…`
-            : 'AI analyzing file…';
+        const label = `AI analyzing ${file.involved_files.length} files in bundle…`;
         startTask(thisKey, 'auditing', label);
-        startProgressAnimation(0, 85, label, isBundleMode ? 60000 : 40000);
+        startProgressAnimation(0, 85, label, 60000);
 
         try {
-            const payload = { session_id: sessionId, file_path: primaryFile };
-            if (isBundleMode) {
-                payload.bundle_name = bundleName;
-                payload.involved_files = file.involved_files;
-            }
-            const res = await api.post('/audit', payload);
+            const res = await api.post('/audit', {
+                session_id: sessionId,
+                file_path: primaryFile,
+                bundle_name: bundleName,
+                involved_files: file.involved_files,
+            });
             if (currentFileRef.current !== thisKey) return;
 
             const raw = Array.isArray(res.data.report) ? res.data.report : [];
@@ -300,45 +344,11 @@ const AuditWorkspace = ({ sessionId, file }) => {
         }
     };
 
-    // Single-file fix — always targets primaryFile only, with bundle context for data-flow awareness
-    const runFix = async () => {
-        if (fixedCode) { setActiveTab('fix'); return; }
-        const thisKey = cacheKey;
-        startTask(thisKey, 'fixing', 'Generating security patch…');
-        setLoading(true);
-        startProgressAnimation(0, 90, 'Generating security patch…', 60000);
-
-        try {
-            const payload = { session_id: sessionId, file_path: primaryFile };
-            if (isBundleMode) {
-                payload.bundle_name = bundleName;
-                payload.involved_files = file.involved_files;
-                // Only vulns attributed to the primary file
-                const primaryVulns = report.filter(v => v.severity !== 'ERROR' && (v.file === primaryFile || !v.file));
-                if (primaryVulns.length > 0) payload.vulnerabilities = primaryVulns;
-            }
-            const res = await api.post('/fix', payload);
-            if (currentFileRef.current !== thisKey) return;
-            setFixedCode(res.data.fixed_code);
-            setActiveTab('fix');
-            setProgress(100);
-            setProgressLabel('Patch ready');
-        } catch (err) {
-            if (currentFileRef.current !== thisKey) return;
-            console.error('Fix failed:', err);
-        } finally {
-            clearInterval(progressTimerRef.current);
-            endTask(thisKey);
-            if (currentFileRef.current === thisKey) setLoading(false);
-        }
-    };
-
-    // Sequential bundle fix — one ReAct agent call per file, auto-applied after each
+    // Sequential bundle fix — skips already-resolved files on retry
     const runBundleFix = async () => {
         if (loading || activeTasks[cacheKey]) return;
         const thisKey = cacheKey;
 
-        // Group findings by the file they were reported against
         const validVulns = report.filter(v => v.severity !== 'ERROR');
         const byFile = {};
         validVulns.forEach(v => {
@@ -346,7 +356,9 @@ const AuditWorkspace = ({ sessionId, file }) => {
             if (!byFile[fp]) byFile[fp] = [];
             byFile[fp].push(v);
         });
-        const fileGroups = Object.entries(byFile);
+
+        // Skip files that were already successfully patched
+        const fileGroups = Object.entries(byFile).filter(([fp]) => !resolvedFiles[fp]);
         if (fileGroups.length === 0) return;
 
         setLoading(true);
@@ -357,13 +369,12 @@ const AuditWorkspace = ({ sessionId, file }) => {
         try {
             for (let i = 0; i < fileGroups.length; i++) {
                 const [filePath, fileVulns] = fileGroups[i];
-                if (currentFileRef.current !== thisKey) break; // user navigated away
+                if (currentFileRef.current !== thisKey) break;
 
                 setBundleFixProgress({ total: fileGroups.length, current: i + 1, currentFile: filePath, errors, done: false });
                 startTask(filePath, 'fixing', `Fixing ${filePath}…`);
 
                 try {
-                    // Step A+B: fix this specific file (peer files provided as read-only context)
                     const fixRes = await api.post('/fix', {
                         session_id: sessionId,
                         file_path: filePath,
@@ -372,7 +383,6 @@ const AuditWorkspace = ({ sessionId, file }) => {
                         vulnerabilities: fileVulns,
                     });
 
-                    // Step C: apply immediately so the next iteration sees the updated workspace
                     startTask(filePath, 'applying', `Applying fix for ${filePath}…`);
                     const vulnTypes = [...new Set(fileVulns.map(v => v.type).filter(Boolean))].join(', ');
                     const topSeverity = fileVulns.find(v => ['CRITICAL', 'HIGH'].includes(v.severity))?.severity || 'MEDIUM';
@@ -384,6 +394,12 @@ const AuditWorkspace = ({ sessionId, file }) => {
                         severity: topSeverity,
                         cwe: '',
                     });
+
+                    // Mark file as resolved and store the patched source for display
+                    setResolvedFiles(prev => ({
+                        ...prev,
+                        [filePath]: { patchedCode: fixRes.data.fixed_code },
+                    }));
                 } catch (err) {
                     console.error(`Bundle fix failed for ${filePath}:`, err);
                     errors.push(filePath);
@@ -396,85 +412,17 @@ const AuditWorkspace = ({ sessionId, file }) => {
 
             setBundleFixProgress({ total: fileGroups.length, current: fileGroups.length, currentFile: null, errors, done: true });
             setDownloadUrl(`/v2/download/${sessionId}`);
+        } finally {
             setLoading(false);
-
-            // Re-audit to verify all fixes landed
-            setTimeout(() => {
-                if (currentFileRef.current === thisKey) {
-                    setHasAudited(false);
-                    runAuditRef.current?.();
-                }
-            }, 1000);
-        } finally {
             endTask(thisKey);
         }
-    };
-
-    const applyFix = async () => {
-        if (!fixedCode) return;
-        const thisKey = cacheKey;
-        startTask(thisKey, 'applying', `Applying fix for ${primaryFile}…`);
-        setApplyState('applying');
-        setLoading(true);
-
-        const vulnTypes = [...new Set(report.map(v => v.type).filter(Boolean))].join(', ');
-        const topSeverity = report.find(v => ['CRITICAL', 'HIGH'].includes(v.severity))?.severity || 'MEDIUM';
-        const cwes = [...new Set(report.map(v => v.cwe).filter(Boolean))].join(', ');
-
-        try {
-            await api.post('/apply', {
-                session_id: sessionId,
-                file_path: primaryFile,
-                fixed_code: fixedCode,
-                vuln_type: vulnTypes || 'Security Fix',
-                severity: topSeverity,
-                cwe: cwes,
-            });
-
-            setApplyState('applied');
-            setDownloadUrl(`/v2/download/${sessionId}`);
-
-            setTimeout(() => {
-                if (currentFileRef.current !== thisKey) return;
-                setFixedCode(null);
-                setActiveTab('audit');
-                setHasAudited(false);
-                runAuditRef.current?.();
-            }, 800);
-        } catch (err) {
-            if (currentFileRef.current === thisKey) {
-                console.error('Apply failed:', err);
-                setApplyState('error');
-                alert('Failed to apply fix: ' + (err.response?.data?.detail || err.message));
-            }
-        } finally {
-            endTask(thisKey);
-            if (currentFileRef.current === thisKey) setLoading(false);
-        }
-    };
-
-    const handleDownload = () => {
-        const token = tokenStore.get();
-        const url = `http://localhost:8000/v2/download/${sessionId}/${primaryFile}`;
-        fetch(url, { headers: { Authorization: `Bearer ${token}` } })
-            .then(r => r.blob())
-            .then(blob => {
-                const blobUrl = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = blobUrl;
-                a.download = primaryFile.split('/').pop();
-                document.body.appendChild(a);
-                a.click();
-                a.remove();
-                URL.revokeObjectURL(blobUrl);
-            })
-            .catch(err => alert('Download failed: ' + err.message));
     };
 
     const handleDownloadZip = () => {
         const token = tokenStore.get();
-        const url = `http://localhost:8000/v2/download/${sessionId}`;
-        fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+        fetch(`http://localhost:8000/v2/download/${sessionId}`, {
+            headers: { Authorization: `Bearer ${token}` },
+        })
             .then(r => r.blob())
             .then(blob => {
                 const blobUrl = URL.createObjectURL(blob);
@@ -495,7 +443,6 @@ const AuditWorkspace = ({ sessionId, file }) => {
         setChatHistory(prev => [...prev, userMsg]);
         setChatInput('');
         setLoading(true);
-
         try {
             const res = await api.post('/chat', {
                 session_id: sessionId,
@@ -510,16 +457,36 @@ const AuditWorkspace = ({ sessionId, file }) => {
         }
     };
 
-    const isFixDisabled = !hasAudited || report.length === 0 || report.every(v => v.severity === 'ERROR');
-
-    // Keep the ref current so stale setTimeout callbacks always call the latest version
-    runAuditRef.current = runAudit;
+    // ── Single-file state badge ────────
+    const singleFileStateBadge = !isBundleMode && parentBundleName
+        ? (() => {
+            const parentCache = fileCache.current[parentBundleName];
+            if (parentCache?.resolvedFiles?.[primaryFile]) {
+                return (
+                    <span className="text-[11px] text-green-400 bg-green-900/20 border border-green-500/30 px-2.5 py-1 rounded-full flex items-center gap-1 flex-none">
+                        <CheckCircle size={11} /> File Secured ✓
+                    </span>
+                );
+            }
+            if (parentCache?.hasAudited) {
+                const ff = (parentCache.report || []).filter(v => v.severity !== 'ERROR' && v.file === primaryFile);
+                if (ff.length > 0) {
+                    return (
+                        <span className="text-[11px] text-orange-300 bg-orange-900/20 border border-orange-500/30 px-2.5 py-1 rounded-full flex-none">
+                            {ff.length} finding{ff.length !== 1 ? 's' : ''}
+                        </span>
+                    );
+                }
+            }
+            return null;
+        })()
+        : null;
 
     // ── Render ─────────────────────────────────────────────────────────────────
     return (
         <div className="relative h-full flex flex-col min-h-0">
 
-            {/* Background task overlay — shown when user navigated away and came back mid-task */}
+            {/* Background task overlay */}
             {!loading && activeTasks[cacheKey] && (
                 <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-gray-950/80 backdrop-blur-sm rounded-xl">
                     <Loader2 className="w-10 h-10 text-sentry-accent animate-spin mb-3" />
@@ -530,108 +497,228 @@ const AuditWorkspace = ({ sessionId, file }) => {
                 </div>
             )}
 
-            {/* Header */}
-            <div className="flex-none flex items-center justify-between mb-4 border-b border-gray-700 pb-4">
-                <div className="min-w-0">
+            {/* =========================================
+                LEVEL 1: The State Header (Top)
+            ========================================= */}
+            <div className="flex-none p-6 border-b border-gray-700 bg-gray-900/40 text-center">
+                <div className="flex items-center justify-center gap-3 mb-2">
                     {isBundleMode ? (
-                        <div className="flex items-center gap-2">
-                            <Layers size={15} className="flex-none text-sentry-accent" />
-                            <h2 className="text-base font-bold truncate max-w-sm text-white capitalize" title={bundleName}>
-                                {bundleName?.replace(/_/g, ' ')}
+                        <>
+                            <Layers className="text-sentry-accent" size={24} />
+                            <h2 className="text-2xl font-bold text-white capitalize">
+                                {bundleName?.replace(/_/g, ' ')} Domain
                             </h2>
-                            <span className="text-[10px] bg-gray-700 text-gray-300 px-2 py-0.5 rounded-full flex-none">
-                                {file.involved_files.length} files
-                            </span>
-                        </div>
+                        </>
                     ) : (
-                        <h2 className="text-base font-bold font-mono truncate max-w-sm text-white" title={primaryFile}>
-                            {primaryFile}
-                        </h2>
-                    )}
-                    {hasAudited && (
-                        <p className="text-xs text-gray-500 mt-0.5">
-                            {report.filter(v => v.severity !== 'ERROR').length} finding(s) · {report.filter(v => ['CRITICAL', 'HIGH'].includes(v.severity)).length} critical/high
-                        </p>
+                        <>
+                            <FileText className="text-gray-400" size={24} />
+                            <h2 className="text-2xl font-bold font-mono text-white">
+                                {primaryFile}
+                            </h2>
+                        </>
                     )}
                 </div>
 
-                <div className="flex gap-2 flex-none">
-                    <button
-                        id="tab-audit"
-                        onClick={() => setActiveTab('audit')}
-                        className={`px-3 py-1.5 rounded text-sm flex items-center gap-1.5 transition-colors
-              ${activeTab === 'audit' ? 'bg-sentry-accent text-sentry-dark font-bold' : 'bg-gray-800 text-gray-300 hover:bg-gray-700'}`}
-                    >
-                        <ShieldAlert size={15} /> Audit
-                    </button>
+                {/* Dynamic Status Badge (Centered) */}
+                <div className="text-sm mt-2">
+                    {loading && (
+                        <span className="text-gray-400 flex items-center justify-center gap-2">
+                            <Loader2 size={14} className="animate-spin" />
+                            Status: {bundleFixProgress ? `Fixing ${bundleFixProgress.current}/${bundleFixProgress.total}…` : 'Auditing…'}
+                        </span>
+                    )}
+                    {!loading && !hasAudited && (
+                        <span className="text-gray-500">Status: Pending Audit 🔍</span>
+                    )}
+                    {!loading && hasAudited && !hasFindings && (
+                        <span className="text-green-400 font-bold">Status: Domain Clean ✅</span>
+                    )}
+                    {!loading && hasAudited && hasFindings && !allResolved && (
+                        <span className="text-orange-400 font-bold">
+                            Status: Vulnerabilities Found ⚠️
+                            <span className="text-gray-400 text-xs ml-2 font-normal">
+                                ({report.filter(v => v.severity !== 'ERROR').length} findings)
+                            </span>
+                        </span>
+                    )}
+                    {!loading && allResolved && (
+                        <span className="text-green-500 font-bold">Status: Domain Secured ✅</span>
+                    )}
 
-                    <button
-                        id="tab-fix"
-                        onClick={runFix}
-                        disabled={isFixDisabled}
-                        className={`px-3 py-1.5 rounded text-sm flex items-center gap-1.5 transition-colors
-              ${activeTab === 'fix' ? 'bg-green-500 text-sentry-dark font-bold' : 'bg-gray-800 text-gray-300'}
-              ${isFixDisabled ? 'opacity-40 cursor-not-allowed' : 'hover:bg-gray-700'}`}
-                    >
-                        <Wrench size={15} /> Fix
-                    </button>
-
-                    <button
-                        id="tab-chat"
-                        onClick={() => setActiveTab('chat')}
-                        className={`px-3 py-1.5 rounded text-sm flex items-center gap-1.5 transition-colors
-              ${activeTab === 'chat' ? 'bg-blue-500 text-white font-bold' : 'bg-gray-800 text-gray-300 hover:bg-gray-700'}`}
-                    >
-                        <MessageSquare size={15} /> Chat
-                    </button>
+                    {/* Single File Status Override */}
+                    {!isBundleMode && singleFileStateBadge && !loading && (
+                        <div className="mt-2 flex justify-center">{singleFileStateBadge}</div>
+                    )}
                 </div>
             </div>
 
-            {/* ── TAB 1: AUDIT ── */}
+            {/* =========================================
+                LEVEL 2: Action Buttons (Middle)
+            ========================================= */}
+            <div className="flex-none flex justify-center items-center gap-3 p-4 bg-gray-800/30 border-b border-gray-700">
+                {isBundleMode ? (
+                    <>
+                        {/* STATE 1: Not yet audited */}
+                        {!hasAudited && !loading && (
+                            <button
+                                onClick={() => { setActiveTab('audit'); runAudit(); }}
+                                disabled={Boolean(activeTasks[cacheKey])}
+                                className="px-6 py-2.5 rounded-lg text-sm flex items-center gap-2 transition-colors bg-blue-600 text-white font-bold hover:bg-blue-500 shadow-lg"
+                            >
+                                <ShieldAlert size={16} /> Run Domain Audit
+                            </button>
+                        )}
+
+                        {/* STATE 2: Audited with unfixed findings */}
+                        {hasAudited && hasFindings && !allResolved && !loading && (
+                            <button
+                                onClick={runBundleFix}
+                                disabled={Boolean(activeTasks[cacheKey])}
+                                className="px-6 py-2.5 rounded-lg text-sm flex items-center gap-2 transition-colors bg-orange-500 text-white font-bold hover:bg-orange-400 shadow-lg"
+                            >
+                                <Wrench size={16} /> Fix Entire Domain
+                            </button>
+                        )}
+
+                        {/* STATE 3: Clean domain — offer re-audit */}
+                        {hasAudited && !hasFindings && !loading && (
+                            <button
+                                onClick={() => { setActiveTab('audit'); runAudit(); }}
+                                className="px-6 py-2.5 rounded-lg text-sm flex items-center gap-2 bg-gray-700 text-gray-300 hover:bg-gray-600"
+                            >
+                                <RefreshCw size={16} /> Re-audit Domain
+                            </button>
+                        )}
+
+                        {/* STATE 4: All resolved — download */}
+                        {allResolved && !loading && downloadUrl && (
+                            <button
+                                onClick={handleDownloadZip}
+                                className="px-6 py-2.5 rounded-lg text-sm flex items-center gap-2 bg-green-600 text-white font-bold hover:bg-green-500 shadow-lg"
+                            >
+                                <Download size={16} /> Download Secured Codebase
+                            </button>
+                        )}
+                    </>
+                ) : (
+                    /* Single File Read-Only Tab Toggles */
+                    <div className="flex gap-2">
+                        <button
+                            onClick={() => setActiveTab('audit')}
+                            className={`px-4 py-2 rounded-lg text-sm flex items-center gap-2 transition-colors ${activeTab === 'audit' ? 'bg-gray-700 text-white font-bold' : 'bg-transparent text-gray-400 hover:bg-gray-800'}`}
+                        >
+                            <ShieldAlert size={16} /> Vulnerability Report
+                        </button>
+                        <button
+                            onClick={() => setActiveTab('chat')}
+                            className={`px-4 py-2 rounded-lg text-sm flex items-center gap-2 transition-colors ${activeTab === 'chat' ? 'bg-blue-600 text-white font-bold' : 'bg-transparent text-gray-400 hover:bg-gray-800'}`}
+                        >
+                            <MessageSquare size={16} /> Chat with AI
+                        </button>
+                    </div>
+                )}
+            </div>
+
+            {/* =========================================
+                LEVEL 3: Content (Bottom)
+            ========================================= */}
             {activeTab === 'audit' && (
                 <div className="flex-1 overflow-y-auto pr-1 custom-scrollbar flex flex-col">
 
-                    {/* Pre-audit call-to-action */}
-                    {!hasAudited && !loading && (
+                    {/* ── Single-file view ── */}
+                    {!isBundleMode && (() => {
+                        const parentCache = parentBundleName ? fileCache.current[parentBundleName] : null;
+                        const parentAudited = Boolean(parentCache?.hasAudited);
+                        const parentResolvedFiles = parentCache?.resolvedFiles || {};
+                        const isFileResolved = Boolean(parentResolvedFiles[primaryFile]);
+                        const filePatchedCode = parentResolvedFiles[primaryFile]?.patchedCode;
+                        const fileFindings = parentAudited && !isFileResolved
+                            ? (parentCache.report || []).filter(v => v.severity !== 'ERROR' && v.file === primaryFile)
+                            : [];
+
+                        // Resolved state: show secured banner + patched source
+                        if (isFileResolved) {
+                            return (
+                                <div className="space-y-4">
+                                    <div className="flex flex-col items-center text-green-400 py-8 gap-3">
+                                        <CheckCircle className="w-14 h-14" />
+                                        <h3 className="text-lg font-bold">File Secured</h3>
+                                        <p className="text-gray-500 text-sm text-center max-w-xs">
+                                            Patch was applied successfully as part of the{' '}
+                                            <span className="text-white capitalize">{parentBundleName?.replace(/_/g, ' ')}</span> domain fix.
+                                        </p>
+                                    </div>
+                                    {filePatchedCode && (
+                                        <div>
+                                            <p className="text-xs text-gray-500 mb-1.5">Patched source:</p>
+                                            <pre className="text-xs font-mono bg-gray-950/70 border border-green-900/30 rounded-lg p-3 overflow-x-auto text-green-100/70 max-h-96 overflow-y-auto custom-scrollbar">
+                                                {filePatchedCode}
+                                            </pre>
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        }
+
+                        // Audited state: show filtered findings
+                        if (parentAudited) {
+                            return fileFindings.length > 0 ? (
+                                <div className="space-y-2.5 p-4">
+                                    {fileFindings.map((vuln, idx) => (
+                                        <VulnCard key={idx} vuln={vuln} showFile={false} />
+                                    ))}
+                                </div>
+                            ) : (
+                                <div className="flex flex-col items-center text-green-400 py-10 gap-3">
+                                    <CheckCircle className="w-16 h-16" />
+                                    <h3 className="text-xl font-bold">No Vulnerabilities Found</h3>
+                                    <p className="text-gray-500 text-sm">This file looks clean.</p>
+                                </div>
+                            );
+                        }
+
+                        // Not yet audited: guidance panel
+                        return (
+                            <div className="flex-1 flex flex-col items-center justify-center text-gray-400 gap-4">
+                                <div className="p-5 rounded-2xl bg-gray-800/40 border border-gray-700">
+                                    <ShieldAlert className="w-12 h-12 opacity-30 mx-auto" />
+                                </div>
+                                <div className="text-center space-y-2 max-w-xs">
+                                    <p className="text-sm font-mono text-white">{primaryFile}</p>
+                                    {file?.risk_score > 0 && (
+                                        <p className="text-xs text-gray-500">
+                                            Risk score: <span className="text-red-300 font-bold">{file.risk_score}</span>
+                                        </p>
+                                    )}
+                                    <p className="text-xs text-gray-500 mt-3 leading-relaxed">
+                                        Click the <span className="text-white font-semibold">Run Domain Audit</span> button for the parent domain to analyze this file.
+                                    </p>
+                                </div>
+                            </div>
+                        );
+                    })()}
+
+                    {/* ── Bundle mode: pre-audit CTA ── */}
+                    {isBundleMode && !hasAudited && !loading && (
                         <div className="flex-1 flex flex-col items-center justify-center text-gray-400 gap-4">
                             <div className="p-5 rounded-2xl bg-gray-800/40 border border-gray-700">
                                 <ShieldAlert className="w-12 h-12 opacity-30 mx-auto" />
                             </div>
-
-                            {isBundleMode ? (
-                                <div className="text-center space-y-1">
-                                    <p className="text-sm text-gray-400">
-                                        Ready to audit the <span className="font-semibold text-white capitalize">{bundleName?.replace(/_/g, ' ')}</span> security domain
-                                    </p>
-                                    <p className="text-xs text-gray-600">
-                                        {file.involved_files.join(' · ')}
-                                    </p>
-                                </div>
-                            ) : (
-                                <p className="text-sm text-gray-500">
-                                    Ready to analyze <span className="font-mono text-white">{primaryFile}</span>
+                            <div className="text-center space-y-1">
+                                <p className="text-sm text-gray-400">
+                                    Ready to audit the{' '}
+                                    <span className="font-semibold text-white capitalize">{bundleName?.replace(/_/g, ' ')}</span>{' '}
+                                    security domain
                                 </p>
-                            )}
-
-                            <button
-                                id="run-audit-btn"
-                                onClick={runAudit}
-                                disabled={Boolean(activeTasks[cacheKey])}
-                                className="flex items-center gap-2 bg-sentry-accent text-sentry-dark px-6 py-3 rounded-xl
-                           font-bold hover:bg-white transition-all shadow-lg shadow-sentry-accent/20 text-sm
-                           disabled:opacity-40 disabled:cursor-not-allowed"
-                            >
-                                <Play size={16} fill="currentColor" />
-                                {isBundleMode ? 'Run Bundle Audit' : 'Run Security Audit'}
-                            </button>
+                                <p className="text-xs text-gray-600">{file.involved_files.join(' · ')}</p>
+                            </div>
                         </div>
                     )}
 
-                    {/* Loading / progress */}
-                    {loading && (
-                        <div className="flex-1 flex flex-col items-center justify-center gap-6 px-8">
+                    {/* ── Bundle mode: loading/progress ── */}
+                    {isBundleMode && loading && (
+                        <div className="flex-1 flex flex-col items-center justify-center gap-6 px-8 py-10">
                             {bundleFixProgress && !bundleFixProgress.done ? (
-                                /* Sequential bundle-fix progress */
                                 <div className="w-full max-w-sm space-y-4">
                                     <div className="flex items-center gap-3">
                                         <Wrench className="w-8 h-8 text-sentry-accent animate-bounce flex-none" />
@@ -655,192 +742,51 @@ const AuditWorkspace = ({ sessionId, file }) => {
                                     )}
                                 </div>
                             ) : (
-                                /* Regular audit / single-file fix spinner */
                                 <>
                                     <Loader2 className="w-10 h-10 text-sentry-accent animate-spin" />
                                     <div className="w-full max-w-xs">
                                         <ProgressBar value={Math.round(progress)} label={progressLabel} />
                                     </div>
-                                    <p className="text-xs text-gray-500">
-                                        {isBundleMode
-                                            ? 'AI is tracing cross-file data flows…'
-                                            : 'AI is reading every line of your code…'}
-                                    </p>
+                                    <p className="text-xs text-gray-500">AI is tracing cross-file data flows…</p>
                                 </>
                             )}
                         </div>
                     )}
 
-                    {/* Results */}
-                    {hasAudited && !loading && (
-                        <div className="space-y-3">
-                            {/* Clean state */}
-                            {report.filter(v => v.severity !== 'ERROR').length === 0 && applyState !== 'error' && (
+                    {/* ── Bundle mode: results ── */}
+                    {isBundleMode && hasAudited && !loading && (
+                        <div className="space-y-3 p-4">
+                            {/* No vulnerabilities found */}
+                            {!hasFindings && (
                                 <div className="flex flex-col items-center text-green-400 py-10 gap-3">
                                     <CheckCircle className="w-16 h-16" />
                                     <h3 className="text-xl font-bold">No Vulnerabilities Found</h3>
-                                    <p className="text-gray-500 text-sm">
-                                        {isBundleMode ? 'This security domain looks clean.' : 'This file looks secure.'}
+                                    <p className="text-gray-500 text-sm">This security domain looks clean.</p>
+                                </div>
+                            )}
+
+                            {/* Partial errors banner — only shown when some files failed during fix */}
+                            {bundleFixProgress?.done && bundleFixProgress.errors.length > 0 && (
+                                <div className="flex items-center gap-3 bg-yellow-900/20 border border-yellow-500/30 rounded-xl p-3 text-sm">
+                                    <span className="text-yellow-400">⚠</span>
+                                    <p className="text-yellow-300">
+                                        {bundleFixProgress.errors.length} file{bundleFixProgress.errors.length !== 1 ? 's' : ''} failed — click <strong>Fix Entire Domain</strong> to retry.
                                     </p>
                                 </div>
                             )}
 
-                            {/* Apply success banner */}
-                            {applyState === 'applied' && downloadUrl && (
-                                <div className="flex items-center justify-between bg-green-900/20 border border-green-500/30 rounded-xl p-4">
-                                    <div className="flex items-center gap-2 text-green-400">
-                                        <CheckCircle size={18} />
-                                        <span className="text-sm font-medium">Fix applied! Re-verifying…</span>
-                                    </div>
-                                    <button
-                                        id="download-zip-btn"
-                                        onClick={handleDownloadZip}
-                                        className="flex items-center gap-1.5 bg-green-600 hover:bg-green-500 text-white px-3 py-1.5 rounded-lg text-xs font-bold transition-colors"
-                                    >
-                                        <Download size={13} /> Download Fixed ZIP
-                                    </button>
-                                </div>
+                            {/* Per-file findings with resolved state */}
+                            {hasFindings && (
+                                <BundleResults report={report} resolvedFiles={resolvedFiles} />
                             )}
-
-                            {/* Bundle fix complete banner */}
-                            {bundleFixProgress?.done && downloadUrl && (
-                                <div className="flex items-center justify-between bg-green-900/20 border border-green-500/30 rounded-xl p-4">
-                                    <div className="flex items-center gap-2 text-green-400">
-                                        <CheckCircle size={18} />
-                                        <div>
-                                            <span className="text-sm font-medium">
-                                                Domain fixed ({bundleFixProgress.total - bundleFixProgress.errors.length}/{bundleFixProgress.total} files)
-                                            </span>
-                                            {bundleFixProgress.errors.length > 0 && (
-                                                <p className="text-xs text-yellow-400 mt-0.5">
-                                                    {bundleFixProgress.errors.length} file(s) had errors — check console
-                                                </p>
-                                            )}
-                                        </div>
-                                    </div>
-                                    <button
-                                        onClick={handleDownloadZip}
-                                        className="flex items-center gap-1.5 bg-green-600 hover:bg-green-500 text-white px-3 py-1.5 rounded-lg text-xs font-bold transition-colors"
-                                    >
-                                        <Download size={13} /> Download Fixed ZIP
-                                    </button>
-                                </div>
-                            )}
-
-                            {/* Bundle mode: Fix Entire Security Domain CTA */}
-                            {isBundleMode && report.filter(v => v.severity !== 'ERROR').length > 0 && (
-                                <div className="rounded-xl border border-sentry-accent/30 bg-sentry-accent/5 p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-                                    <div className="min-w-0">
-                                        <p className="text-sm font-semibold text-white flex items-center gap-2">
-                                            <Layers size={14} className="text-sentry-accent flex-none" />
-                                            Fix Entire Security Domain
-                                        </p>
-                                        <p className="text-xs text-gray-400 mt-0.5">
-                                            Fixes each affected file sequentially — one focused agent call per file, auto-applied. Download the ZIP when complete.
-                                        </p>
-                                    </div>
-                                    <button
-                                        id="fix-bundle-btn"
-                                        onClick={runBundleFix}
-                                        disabled={loading || Boolean(activeTasks[cacheKey])}
-                                        className="flex-none flex items-center gap-2 bg-sentry-accent text-sentry-dark px-4 py-2 rounded-lg
-                                                   font-bold text-sm hover:bg-white transition-all shadow-lg shadow-sentry-accent/20
-                                                   disabled:opacity-40 disabled:cursor-not-allowed"
-                                    >
-                                        <Wrench size={14} />
-                                        Fix Entire Domain
-                                    </button>
-                                </div>
-                            )}
-
-                            {/* Bundle mode: vulnerabilities grouped by file */}
-                            {isBundleMode && report.filter(v => v.severity !== 'ERROR').length > 0 && (
-                                <BundleResults report={report} />
-                            )}
-
-                            {/* Single-file mode: flat vulnerability cards */}
-                            {!isBundleMode && report.map((vuln, idx) => (
-                                <VulnCard key={idx} vuln={vuln} showFile={true} />
-                            ))}
                         </div>
                     )}
                 </div>
             )}
 
-            {/* ── TAB 2: FIX ── */}
-            {activeTab === 'fix' && (
-                <div className="flex-1 flex flex-col min-h-0">
-                    {loading ? (
-                        <div className="flex-1 flex flex-col items-center justify-center gap-6 px-8">
-                            <Wrench className="w-8 h-8 text-green-400 animate-bounce" />
-                            <div className="w-full max-w-xs">
-                                <ProgressBar value={Math.round(progress)} label={progressLabel} />
-                            </div>
-                            <p className="text-xs text-gray-500">
-                                {isBundleMode
-                                    ? 'Generating cross-file security patch…'
-                                    : 'Generating minimal surgical patch…'}
-                            </p>
-                        </div>
-                    ) : fixedCode && (
-                        <div className="flex-1 bg-[#0d1117] rounded-xl border border-gray-700 overflow-hidden flex flex-col">
-                            {/* Toolbar */}
-                            <div className="bg-gray-800 px-4 py-2.5 text-xs flex justify-between items-center border-b border-gray-700">
-                                <div className="flex items-center gap-2 text-gray-400">
-                                    <Wrench size={12} />
-                                    <span>
-                                        Proposed Patch{isBundleMode ? ` for ${primaryFile}` : ''} — review before applying
-                                    </span>
-                                    {isBundleMode && (
-                                        <span className="text-[10px] bg-yellow-900/40 text-yellow-300 border border-yellow-700/40 px-1.5 py-0.5 rounded">
-                                            peer files may also be modified
-                                        </span>
-                                    )}
-                                </div>
-                                <div className="flex items-center gap-2">
-                                    <button
-                                        id="download-file-btn"
-                                        onClick={handleDownload}
-                                        className="flex items-center gap-1.5 bg-gray-700 hover:bg-gray-600 text-gray-200 px-2.5 py-1 rounded text-xs transition-colors"
-                                    >
-                                        <Download size={11} /> Download
-                                    </button>
-                                    <button
-                                        id="apply-fix-btn"
-                                        onClick={applyFix}
-                                        disabled={applyState === 'applying'}
-                                        className="flex items-center gap-1.5 bg-green-600 hover:bg-green-500 text-white px-3 py-1 rounded text-xs font-bold transition-colors disabled:opacity-50"
-                                    >
-                                        {applyState === 'applying'
-                                            ? <><Loader2 size={11} className="animate-spin" /> Applying…</>
-                                            : <><Save size={11} /> Apply & Re-verify</>
-                                        }
-                                    </button>
-                                </div>
-                            </div>
-
-                            {/* Diff viewer */}
-                            <div className="flex-1 overflow-auto text-xs font-mono custom-scrollbar py-2">
-                                {fixedCode.split('\n').map((line, idx) => {
-                                    if (line.startsWith('-') && !line.startsWith('---'))
-                                        return <div key={idx} className="bg-red-900/30 text-red-400 px-4 py-0.5 whitespace-pre-wrap border-l-2 border-red-500">{line}</div>;
-                                    if (line.startsWith('+') && !line.startsWith('+++'))
-                                        return <div key={idx} className="bg-green-900/30 text-green-400 px-4 py-0.5 whitespace-pre-wrap border-l-2 border-green-500">{line}</div>;
-                                    if (line.startsWith('@@'))
-                                        return <div key={idx} className="bg-blue-900/20 text-blue-400 px-4 py-2 whitespace-pre-wrap font-bold mt-1">{line}</div>;
-                                    if (line.startsWith('---') || line.startsWith('+++'))
-                                        return <div key={idx} className="text-gray-300 font-bold px-4 py-1 whitespace-pre-wrap">{line}</div>;
-                                    return <div key={idx} className="text-gray-500 px-4 py-0.5 whitespace-pre-wrap border-l-2 border-transparent">{line}</div>;
-                                })}
-                            </div>
-                        </div>
-                    )}
-                </div>
-            )}
-
-            {/* ── TAB 3: CHAT ── */}
+            {/* ── TAB: CHAT ── */}
             {activeTab === 'chat' && (
-                <div className="flex-1 flex flex-col min-h-0 bg-gray-900/50 rounded-xl border border-gray-700">
+                <div className="flex-1 flex flex-col min-h-0 bg-gray-900/50 rounded-xl border border-gray-700 m-4">
                     <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
                         {chatHistory.length === 0 && (
                             <div className="text-center text-gray-500 mt-10">
@@ -880,8 +826,8 @@ const AuditWorkspace = ({ sessionId, file }) => {
                             placeholder="Ask a security question…"
                             disabled={loading}
                             className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-sm text-white
-                         placeholder-gray-500 focus:ring-1 focus:ring-sentry-accent focus:border-sentry-accent
-                         outline-none transition-all disabled:opacity-50"
+                                 placeholder-gray-500 focus:ring-1 focus:ring-sentry-accent focus:border-sentry-accent
+                                 outline-none transition-all disabled:opacity-50"
                         />
                         <button
                             id="chat-send-btn"
