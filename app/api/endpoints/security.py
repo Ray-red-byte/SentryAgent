@@ -3,7 +3,7 @@ import json
 import logging
 from fastapi import APIRouter, HTTPException, Depends
 from app.databases.redis import get_redis
-from app.workflows.graphs import (
+from app.workflows.graph import (
     run_full_scan,
     run_file_audit,
     run_bundle_audit,
