@@ -8,11 +8,11 @@ lives here. The heavy lifting is delegated to the patcher_graph subgraph.
 """
 
 import re
-import logging
 from app.workflows.state import PatchState
 from app.memory.knowledge_base import SecurityKnowledgeBase
+from app.utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -50,7 +50,7 @@ def generate_patch(state: PatchState) -> PatchState:
     root_dir  = state["root_dir"]
     full_path = f"{root_dir}/{file_path}"
 
-    print(f"🔧 [PATCH] ReAct agent patch start on: {file_path}")
+    logger.info("[PATCH] ReAct agent patch start on: %s", file_path)
 
     original_code = state.get("original_code")
     if not original_code:
@@ -166,7 +166,7 @@ def generate_patch(state: PatchState) -> PatchState:
             )
             patched_code = raw_content.strip() or original_code
 
-        print(f"✅ [PATCH] ReAct agent finished. Patch size: {len(patched_code)} chars.")
+        logger.info("[PATCH] ReAct agent finished. Patch size: %d chars.", len(patched_code))
 
         return {
             **state,
@@ -177,7 +177,7 @@ def generate_patch(state: PatchState) -> PatchState:
 
     except Exception as e:
         logger.error("[PATCH] ReAct agent failed for %s: %s", file_path, e)
-        print(f"❌ [PATCH] ReAct agent error: {e}")
+        logger.error("[PATCH] ReAct agent error: %s", e)
         return {
             **state,
             "original_code": original_code,
@@ -193,7 +193,7 @@ def generate_patch(state: PatchState) -> PatchState:
 
 def save_patch_to_memory(state: PatchState) -> PatchState:
     """Save the approved patch to organisational memory for future learning."""
-    print("🧠 [MEMORY] Saving patch to knowledge base...")
+    logger.info("[MEMORY] Saving patch to knowledge base...")
 
     try:
         kb = SecurityKnowledgeBase()
@@ -203,11 +203,11 @@ def save_patch_to_memory(state: PatchState) -> PatchState:
             fix_code=state["patched_code"][:1000],
             file_path=state["file_path"],
         )
-        print("✅ [MEMORY] Patch saved to knowledge base")
+        logger.info("[MEMORY] Patch saved to knowledge base")
     except Exception as e:
         # Non-critical — log and continue
         logger.warning("[MEMORY] Failed to save patch: %s", e)
-        print(f"⚠️  [MEMORY] Failed to save patch: {e}")
+        logger.warning("[MEMORY] Failed to save patch: %s", e)
 
     return {**state, "current_stage": "complete"}
 
@@ -225,7 +225,7 @@ def review_patch_node(state: PatchState) -> dict:
     from app.agent.patcher import SecurityPatcher
 
     attempt = state.get("retry_count", 0) + 1
-    print(f"🧐 [REVIEW] Reviewing patch for {state['file_path']} (attempt {attempt})")
+    logger.info("[REVIEW] Reviewing patch for %s (attempt %d)", state['file_path'], attempt)
 
     if not state.get("patched_code"):
         return {

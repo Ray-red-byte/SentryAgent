@@ -1,5 +1,8 @@
 import json
 from app.agent.gemini_client import GeminiClient
+from app.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 class SecurityTranslator:
     def __init__(self):
@@ -10,7 +13,7 @@ class SecurityTranslator:
         Takes a raw JSON vulnerability report and converts it into 
         'Explain It Like I'm 5' (ELI5) plain English.
         """
-        print("👶 Translator is simplifying the report...")
+        logger.info("Translator is simplifying the report...")
         
         # Convert list to string for the prompt
         report_str = json.dumps(vulnerability_report, indent=2)

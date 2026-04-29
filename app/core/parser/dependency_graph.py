@@ -3,6 +3,9 @@ import networkx as nx
 from pathlib import Path
 from tree_sitter import Language, Parser
 from app.core.parser.python_parser import PythonParser
+from app.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 class DependencyMapper(PythonParser):
     def __init__(self, root_dir: str):
@@ -66,7 +69,7 @@ class DependencyMapper(PythonParser):
         """
         Scans the root_dir, parses every .py file, and builds the graph.
         """
-        print(f"📂 Scanning directory: {self.root_dir.absolute()}")
+        logger.debug("Scanning directory: %s", self.root_dir.absolute())
         
         for file_path in self.root_dir.rglob("*.py"):
             if any(part.startswith(".") or part == "venv" or part == "__pycache__" for part in file_path.parts):
@@ -90,6 +93,6 @@ class DependencyMapper(PythonParser):
                              self.graph.add_edge(module_name, imp)
                              
             except Exception as e:
-                print(f"⚠️ Error parsing {file_path.name}: {e}")
+                logger.warning("Error parsing %s: %s", file_path.name, e)
 
         return self.graph

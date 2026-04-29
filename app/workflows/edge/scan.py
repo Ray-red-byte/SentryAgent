@@ -1,5 +1,8 @@
 from app.workflows.state import PatchState, ScanState
 from app.agent.patcher import SecurityPatcher
+from app.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 def should_deep_audit(state: ScanState) -> str:
@@ -16,10 +19,10 @@ def should_deep_audit(state: ScanState) -> str:
     )
 
     if high_risk_count > 0:
-        print(f"🎯 [DECISION] {high_risk_count} high-risk files found → Deep audit required")
+        logger.info("[DECISION] %d high-risk file(s) found — deep audit required", high_risk_count)
         return "audit"
 
-    print("✅ [DECISION] No high-risk files → Skip to report")
+    logger.info("[DECISION] No high-risk files — skipping to report")
     return "report"
 
 def should_prioritize(state: dict) -> str:
@@ -31,8 +34,8 @@ def should_prioritize(state: dict) -> str:
     vulnerabilities = state.get("vulnerabilities", [])
 
     if not vulnerabilities or len(vulnerabilities) <= 1:
-        print("➡️ Routing: Few/no vulnerabilities found. Skipping straight to Report.")
+        logger.info("Routing: few/no vulnerabilities found — skipping to report")
         return "report"
 
-    print(f"➡️ Routing: Found {len(vulnerabilities)} vulnerabilities. Routing to Prioritize.")
+    logger.info("Routing: found %d vulnerability(s) — routing to prioritize", len(vulnerabilities))
     return "prioritize"

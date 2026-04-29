@@ -10,10 +10,9 @@ from app.core.parser.python_parser import PythonParser
 from app.core.parser.dependency_graph import DependencyMapper
 from app.agent.auditor import SecurityAuditor
 from app.memory.knowledge_base import SecurityKnowledgeBase
+from app.utils.logger import get_logger
 
-import logging
-
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +97,7 @@ def discover_files(state: ScanState) -> ScanState:
     Skips compiled bytecode (.pyc/.pyo/.pyd) and well-known non-source
     directories (__pycache__, venv, .git, etc.).
     """
-    print(f"🔍 [DISCOVER] Scanning directory: {state['root_dir']}")
+    logger.info("[DISCOVER] Scanning directory: %s", state['root_dir'])
 
     root_path = Path(state['root_dir'])
     files = []
@@ -112,7 +111,7 @@ def discover_files(state: ScanState) -> ScanState:
             continue
         files.append(str(file_path.relative_to(root_path)))
 
-    print(f"✅ [DISCOVER] Found {len(files)} files to scan")
+    logger.info("[DISCOVER] Found %d file(s) to scan", len(files))
 
     return {
         **state,
@@ -131,7 +130,7 @@ def parse_and_scan(state: ScanState) -> ScanState:
 
     Uses tree-sitter to parse files and identify entry points and hotspots.
     """
-    print(f"🔍 [PARSE] Analyzing {len(state['files_to_scan'])} files...")
+    logger.info("[PARSE] Analyzing %d file(s)...", len(state['files_to_scan']))
 
     parser = PythonParser()
     root_path = Path(state['root_dir'])
@@ -159,12 +158,12 @@ def parse_and_scan(state: ScanState) -> ScanState:
 
         except Exception as e:
             error_msg = f"Error scanning {rel_file_path}: {str(e)}"
-            print(f"⚠️ {error_msg}")
+            logger.warning("%s", error_msg)
             errors.append(error_msg)
             continue
 
     scan_results.sort(key=lambda x: x.risk_score, reverse=True)
-    print(f"✅ [PARSE] Completed. Found {len(scan_results)} files with issues")
+    logger.info("[PARSE] Completed. Found %d file(s) with issues", len(scan_results))
 
     return {
         **state,
@@ -191,23 +190,23 @@ def bundle_into_security_domains(state: ScanState) -> ScanState:
 
     Files may appear in multiple bundles (intentional overlap).
     """
-    print("🗂️  [BUNDLE] Grouping files into security domains...")
+    logger.info("[BUNDLE] Grouping files into security domains...")
 
     root_path = Path(state["root_dir"])
     files_to_scan = state["files_to_scan"]
 
     if not files_to_scan:
-        print("⚠️  [BUNDLE] No files to bundle.")
+        logger.warning("[BUNDLE] No files to bundle.")
         return {**state, "security_bundles": {}, "current_stage": "bundled"}
 
     # --- 1. Build the internal-dependency graph ----------------------------
     try:
         mapper = DependencyMapper(state["root_dir"])
         graph = mapper.build_graph()
-        print(f"  🔗 Dependency graph: {graph.number_of_nodes()} modules, "
-              f"{graph.number_of_edges()} edges")
+        logger.info("  Dependency graph: %d modules, %d edges",
+                    graph.number_of_nodes(), graph.number_of_edges())
     except Exception as e:
-        print(f"⚠️  [BUNDLE] Dependency graph failed ({e}). Heuristics-only mode.")
+        logger.warning("[BUNDLE] Dependency graph failed (%s). Heuristics-only mode.", e)
         mapper = None
         graph = None
 
@@ -271,12 +270,12 @@ def bundle_into_security_domains(state: ScanState) -> ScanState:
     bundles = {domain: sorted(paths) for domain, paths in bundles.items()}
 
     if bundles:
-        print(f"✅ [BUNDLE] Created {len(bundles)} security domain bundle(s):")
+        logger.info("[BUNDLE] Created %d security domain bundle(s):", len(bundles))
         for domain, paths in bundles.items():
-            print(f"  📦 {domain}: {len(paths)} file(s)")
+            logger.info("  %s: %d file(s)", domain, len(paths))
     else:
-        print("⚠️  [BUNDLE] No files matched any domain heuristic. "
-              "deep_audit_high_risk_files will fall back to per-file mode.")
+        logger.warning("[BUNDLE] No files matched any domain heuristic. "
+                       "deep_audit_high_risk_files will fall back to per-file mode.")
 
     return {
         **state,
@@ -295,12 +294,12 @@ def load_organizational_memory(state: ScanState) -> ScanState:
 
     Queries the knowledge base for past vulnerabilities and fixes.
     """
-    print("🧠 [MEMORY] Loading organizational memory...")
+    logger.info("[MEMORY] Loading organizational memory...")
 
     try:
         kb = SecurityKnowledgeBase()
         lessons = kb.recall_relevant_lessons("security audit")
-        print(f"✅ [MEMORY] Loaded {len(lessons)} past lessons")
+        logger.info("[MEMORY] Loaded %d past lesson(s)", len(lessons))
 
         return {
             **state,
@@ -308,7 +307,7 @@ def load_organizational_memory(state: ScanState) -> ScanState:
             "current_stage": "scanned",
         }
     except Exception as e:
-        print(f"⚠️ [MEMORY] Failed to load memory: {e}")
+        logger.warning("[MEMORY] Failed to load memory: %s", e)
         existing_errors = list(state.get("errors", []))
         existing_errors.append(f"Memory load failed: {str(e)}")
         return {
@@ -344,7 +343,7 @@ def deep_audit_high_risk_files(state: ScanState) -> ScanState:
       Falls back to the original per-file behaviour so no findings are silently
       lost when the heuristic classifier produces no matches.
     """
-    print("🕵️  [AUDIT] Starting deep audit on high-risk security bundles...")
+    logger.info("[AUDIT] Starting deep audit on high-risk security bundles...")
 
     risk_threshold = state.get("config", {}).get("risk_threshold", 5)
     # Caps bundles in bundle mode; caps files in fallback mode.
@@ -374,14 +373,14 @@ def deep_audit_high_risk_files(state: ScanState) -> ScanState:
             ) >= risk_threshold
         ][:max_audit]
 
-        print(
-            f"🎯 [AUDIT] {len(high_risk_bundles)} high-risk bundle(s) "
-            f"(threshold={risk_threshold}, cap={max_audit} bundles)"
+        logger.info(
+            "[AUDIT] %d high-risk bundle(s) (threshold=%s, cap=%s bundles)",
+            len(high_risk_bundles), risk_threshold, max_audit
         )
 
         for bundle_name, paths in high_risk_bundles:
             bundle_max = max((risk_by_file.get(fp, 0) for fp in paths), default=0)
-            print(f"  📦 '{bundle_name}': max_risk={bundle_max}, {len(paths)} file(s)")
+            logger.info("  '%s': max_risk=%s, %d file(s)", bundle_name, bundle_max, len(paths))
             for fp in paths:
                 if fp not in audited_set:
                     audited_set.add(fp)
@@ -396,18 +395,16 @@ def deep_audit_high_risk_files(state: ScanState) -> ScanState:
             and sr.file_path not in audited_set
         ]
         if uncovered:
-            print(
-                f"  ↩️  {len(uncovered)} high-risk file(s) not in any bundle "
-                f"— auditing individually"
-            )
+            logger.info("  %d high-risk file(s) not in any bundle — auditing individually",
+                        len(uncovered))
             for sr in uncovered:
                 audited_set.add(sr.file_path)
                 files_to_audit.append(sr.file_path)
 
     else:
         # No bundles at all — original per-file behaviour
-        print(
-            "⚠️  [AUDIT] No security bundles found. "
+        logger.warning(
+            "[AUDIT] No security bundles found. "
             "Falling back to per-file mode (top files by risk score)."
         )
         high_risk = [
@@ -415,19 +412,19 @@ def deep_audit_high_risk_files(state: ScanState) -> ScanState:
             if sr.risk_score >= risk_threshold
         ][:max_audit]
         files_to_audit = [sr.file_path for sr in high_risk]
-        print(
-            f"🎯 [AUDIT] {len(files_to_audit)} file(s) to audit "
-            f"(threshold={risk_threshold})"
+        logger.info(
+            "[AUDIT] %d file(s) to audit (threshold=%s)",
+            len(files_to_audit), risk_threshold
         )
 
     if not files_to_audit:
-        print("✅ [AUDIT] Nothing to audit.")
+        logger.info("[AUDIT] Nothing to audit.")
         return {**state, "current_stage": "audited"}
 
     # ── Audit each file ────────────────────────────────────────────────────
     for rel_path in files_to_audit:
         try:
-            print(f"  📄 Auditing: {rel_path}")
+            logger.info("  Auditing: %s", rel_path)
 
             if state.get("cache_name"):
                 report = auditor.audit_file_with_cache(rel_path, state["cache_name"])
@@ -449,10 +446,10 @@ def deep_audit_high_risk_files(state: ScanState) -> ScanState:
 
         except Exception as e:
             error_msg = f"Audit failed for {rel_path}: {str(e)}"
-            print(f"⚠️ {error_msg}")
+            logger.warning("%s", error_msg)
             errors.append(error_msg)
 
-    print(f"✅ [AUDIT] Found {len(all_vulnerabilities)} vulnerabilities")
+    logger.info("[AUDIT] Found %d vulnerability(s)", len(all_vulnerabilities))
 
     return {
         **state,
@@ -472,7 +469,7 @@ def prioritize_vulnerabilities(state: ScanState) -> ScanState:
 
     Orders vulnerabilities by severity and exploitability.
     """
-    print("📊 [PRIORITIZE] Sorting vulnerabilities...")
+    logger.info("[PRIORITIZE] Sorting vulnerabilities...")
 
     _SEVERITY_RANK = {"CRITICAL": 5, "HIGH": 4, "MEDIUM": 3, "LOW": 2, "INFO": 1}
     sorted_vulns = sorted(
@@ -493,7 +490,7 @@ def prioritize_vulnerabilities(state: ScanState) -> ScanState:
         "info": sum(1 for v in sorted_vulns if v.severity == "INFO"),
     }
 
-    print(f"✅ [PRIORITIZE] Stats: {stats}")
+    logger.info("[PRIORITIZE] Stats: %s", stats)
 
     return {
         **state,
@@ -516,7 +513,7 @@ def generate_report(state: ScanState) -> ScanState:
 
     Creates a comprehensive report with all findings.
     """
-    print("📝 [REPORT] Generating final report...")
+    logger.info("[REPORT] Generating final report...")
 
     raw_bundles = state.get("security_bundles", {})
     report = {
@@ -556,7 +553,7 @@ def generate_report(state: ScanState) -> ScanState:
         "errors": state.get("errors", []),
     }
 
-    print("✅ [REPORT] Report generated successfully")
+    logger.info("[REPORT] Report generated successfully")
 
     return {
         **state,

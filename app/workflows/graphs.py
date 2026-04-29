@@ -11,7 +11,7 @@ from app.workflows.state import ScanState, AuditState, PatchState, ChatState
 from app.workflows.node.scan import (
     discover_files,
     parse_and_scan,
-    bundle_into_security_domains,   # Step 2: implemented in node/scan.py
+    bundle_into_security_domains,
     load_organizational_memory,
     deep_audit_high_risk_files,
     prioritize_vulnerabilities,
@@ -20,6 +20,9 @@ from app.workflows.node.scan import (
 from app.workflows.node.audit import audit_security_bundle
 from app.workflows.node.chat import run_chat_node
 from app.workflows.node.patch import generate_patch, save_patch_to_memory
+from app.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 def create_scan_workflow():
     """
@@ -203,13 +206,13 @@ async def run_full_scan(
         }
     }
     
-    print(f"🚀 Starting full scan for session: {session_id}")
-    print(f"📁 Root directory: {root_dir}")
+    logger.info("Starting full scan for session: %s", session_id)
+    logger.info("Root directory: %s", root_dir)
     
     # Run the workflow
     result = await scan_workflow.ainvoke(initial_state)
     
-    print(f"✅ Scan complete! Stage: {result['current_stage']}")
+    logger.info("Scan complete! Stage: %s", result['current_stage'])
     
     return result["scan_metadata"]["final_report"]
 
@@ -241,7 +244,7 @@ async def run_file_audit(
         "error": None,
     }
 
-    print(f"🕵️ Auditing file: {file_path}")
+    logger.info("Auditing file: %s", file_path)
 
     result = await audit_workflow.ainvoke(initial_state)
 
@@ -278,7 +281,7 @@ async def run_bundle_audit(
         "error": None,
     }
 
-    print(f"🕵️ Auditing bundle '{bundle_name}' ({len(involved_files)} files)")
+    logger.info("Auditing bundle '%s' (%d file(s))", bundle_name, len(involved_files))
 
     result = await audit_workflow.ainvoke(initial_state)
 
@@ -330,7 +333,7 @@ async def run_patch_generation(
         "review_feedback": None,
     }
     
-    print(f"🔧 Generating patch for: {file_path}")
+    logger.info("Generating patch for: %s", file_path)
     
     result = await patch_workflow.ainvoke(initial_state)
     
@@ -372,7 +375,7 @@ async def run_chat(
         "error": None,
     }
 
-    print(f"💬 Starting chat for file: {file_path}")
+    logger.info("Starting chat for file: %s", file_path)
 
     result = await chat_workflow.ainvoke(initial_state)
 

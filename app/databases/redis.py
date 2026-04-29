@@ -1,6 +1,9 @@
 # app/databases/redis.py
 import redis
 import os
+from app.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 class RedisClient:
     _client = None
@@ -20,9 +23,9 @@ class RedisClient:
                 )
                 # Quick ping to check connection
                 self._client.ping()
-                print(f"✅ Connected to Redis at {host}:{port}")
+                logger.info("Connected to Redis at %s:%s", host, port)
             except redis.ConnectionError:
-                print(f"⚠️ Warning: Redis at {host}:{port} is unreachable.")
+                logger.warning("Redis at %s:%s is unreachable.", host, port)
                 self._client = None # Handle gracefully in routes
         return self._client
 

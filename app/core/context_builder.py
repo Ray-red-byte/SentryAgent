@@ -2,6 +2,9 @@ import os
 from pathlib import Path
 from app.core.parser.dependency_graph import DependencyMapper
 from app.memory.vector_store import CodebaseRAG
+from app.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 class ContextAssembler:
     def __init__(self, root_dir: str):
@@ -29,8 +32,8 @@ class ContextAssembler:
         
         dependency_context = []
         
-        print(f"🔍 Analyzing {file_path}...")
-        print(f"   Found imports: {imports}")
+        logger.info("Analyzing %s...", file_path)
+        logger.debug("Found imports: %s", imports)
 
         # 3. Fetch Dependency Code (Using Task 6 Logic)
         for imp in imports:
@@ -70,8 +73,7 @@ if __name__ == "__main__":
         # Note: We run this INSIDE Docker, where /app/app exists
         ctx = assembler.build_context_for_file("parser/chunker.py")
         
-        print("\n✅ GENERATED CONTEXT:\n")
-        print(ctx[:1000]) # Print first 1000 chars
-        print("\n... (truncated) ...")
+        logger.info("GENERATED CONTEXT (first 1000 chars):\n%s", ctx[:1000])
+        logger.info("... (truncated) ...")
     except Exception as e:
-        print(f"❌ Error: {e}")
+        logger.error("Error: %s", e)

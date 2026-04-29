@@ -4,10 +4,9 @@ Each node is a pure function that takes state and returns updated state.
 """
 from app.workflows.state import Vulnerability, AuditState
 from app.agent.auditor import SecurityAuditor
+from app.utils.logger import get_logger
 
-import logging
-
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 def audit_security_bundle(state: AuditState) -> AuditState:
     """Audit a security-domain bundle (one or more files) for vulnerabilities."""
@@ -15,7 +14,7 @@ def audit_security_bundle(state: AuditState) -> AuditState:
     bundle_name = state.get("security_bundle_name") or state.get("file_path") or "unknown"
 
     label = bundle_name if len(involved_files) != 1 else involved_files[0]
-    print(f"🕵️ [AUDIT] Analyzing bundle '{label}' ({len(involved_files)} file(s))...")
+    logger.info("[AUDIT] Analyzing bundle '%s' (%d file(s))...", label, len(involved_files))
 
     try:
         auditor = SecurityAuditor(root_dir=state["root_dir"])
@@ -45,7 +44,7 @@ def audit_security_bundle(state: AuditState) -> AuditState:
                 )
                 vulnerabilities.append(vuln)
 
-        print(f"✅ [AUDIT] Found {len(vulnerabilities)} issues in '{label}'")
+        logger.info("[AUDIT] Found %d issue(s) in '%s'", len(vulnerabilities), label)
 
         return {
             **state,
@@ -55,7 +54,7 @@ def audit_security_bundle(state: AuditState) -> AuditState:
         }
 
     except Exception as e:
-        print(f"❌ [AUDIT] Error: {e}")
+        logger.error("[AUDIT] Error: %s", e)
         return {
             **state,
             "current_stage": "error",
