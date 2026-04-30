@@ -27,15 +27,12 @@ async def run_full_scan(
         "current_file": None,
         "security_bundles": {},
         "scan_results": [],
-        "vulnerabilities": [],
+        "vulnerabilities": [],    # always empty after scan; populated by /audit
         "current_stage": "init",
         "scan_metadata": {},
         "errors": [],
         "organizational_memory": [],
-        "config": config or {
-            "risk_threshold": 5,
-            "max_audit_files": 10
-        }
+        "config": config or {},
     }
     
     logger.info("Starting full scan for session: %s", session_id)

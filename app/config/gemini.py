@@ -15,11 +15,31 @@ PREFERRED_MODELS = [
     "models/gemini-1.0-pro",
 ]
 
-# Generation config that strongly steers toward clean JSON output.
-# response_mime_type="application/json" asks Gemini to constrain its output
-# to valid JSON when the model supports it (1.5+).
+# ── Audit config ───────────────────────────────────────────────────────────────
+# response_mime_type="application/json" forces Gemini (1.5+) to produce valid
+# JSON, eliminating parse failures caused by Markdown fences or prose preambles.
+# temperature=0.1 → deterministic, low-hallucination vulnerability reports.
 JSON_GENERATION_CONFIG = genai.types.GenerationConfig(
-    temperature=0.1,          # Low temperature → more deterministic, less hallucination
+    temperature=0.1,
     top_p=0.95,
     candidate_count=1,
+    response_mime_type="application/json",
+)
+
+# ── Patch config ───────────────────────────────────────────────────────────────
+# Patches need slightly more creativity for finding fix patterns, but NOT for
+# the JSON review. Use plain text so the ReAct agent can emit fenced code blocks.
+PATCH_GENERATION_CONFIG = genai.types.GenerationConfig(
+    temperature=0.15,
+    top_p=0.95,
+    candidate_count=1,
+)
+
+# ── Review config ──────────────────────────────────────────────────────────────
+# Reviewer must return strict JSON — same mime_type as audit.
+REVIEW_GENERATION_CONFIG = genai.types.GenerationConfig(
+    temperature=0.05,   # near-zero: reviewer must be consistent and decisive
+    top_p=0.90,
+    candidate_count=1,
+    response_mime_type="application/json",
 )

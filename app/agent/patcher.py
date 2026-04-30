@@ -84,7 +84,7 @@ class SecurityPatcher:
             prompt_str = f"{prompt_str}\n\n{bundle_context}"
 
         logger.info("Invoking LLM for patching: %s", file_path)
-        fixed_code_raw = self.llm.analyze(prompt_str)
+        fixed_code_raw = self.llm.analyze_patch(prompt_str)
 
         # Clean up any markdown wrapping (Gemini sometimes adds ```python)
         fixed_code = self.clean_output(fixed_code_raw)
@@ -120,7 +120,7 @@ class SecurityPatcher:
             patched_code=patched_code,
         )
 
-        response_text = self.llm.analyze(prompt)
+        response_text = self.llm.analyze_review(prompt)
 
         try:
             # Strip markdown fences if present

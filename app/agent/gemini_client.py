@@ -6,7 +6,7 @@ import google.generativeai as genai
 from langchain_google_genai import ChatGoogleGenerativeAI
 from app.config.settings import GEMINI_API_KEY
 
-from app.config.gemini import CACHE_MODEL, PREFERRED_MODELS, JSON_GENERATION_CONFIG
+from app.config.gemini import CACHE_MODEL, PREFERRED_MODELS, JSON_GENERATION_CONFIG, PATCH_GENERATION_CONFIG, REVIEW_GENERATION_CONFIG
 
 logger = logging.getLogger(__name__)
 
@@ -48,9 +48,20 @@ class GeminiClient:
                 raise ValueError("No generative models found for this API key.")
 
             logger.info("Auto-selected Gemini model: %s", selected)
+            # Audit/review model uses JSON_GENERATION_CONFIG (structured output)
             self.model = genai.GenerativeModel(
                 selected,
                 generation_config=JSON_GENERATION_CONFIG,
+            )
+            # Patch model uses PATCH_GENERATION_CONFIG (plain text for code blocks)
+            self.patch_model = genai.GenerativeModel(
+                selected,
+                generation_config=PATCH_GENERATION_CONFIG,
+            )
+            # Review model uses near-zero temperature + JSON output
+            self.review_model = genai.GenerativeModel(
+                selected,
+                generation_config=REVIEW_GENERATION_CONFIG,
             )
 
         except Exception as e:
@@ -63,12 +74,32 @@ class GeminiClient:
     def analyze(self, prompt: str) -> str:
         """
         Sends a prompt to Gemini and returns the text response.
+        Used for audit and review calls — uses JSON_GENERATION_CONFIG.
         Retries up to 3 times with exponential backoff on 429 rate-limit errors.
         """
         if not self._ready():
             return "[]"
-
         return self._call_with_retry(lambda: self.model.generate_content(prompt))
+
+    def analyze_patch(self, prompt: str) -> str:
+        """
+        Sends a prompt for patch generation — uses PATCH_GENERATION_CONFIG
+        (plain text, slightly higher temperature for creative fix patterns).
+        """
+        if not self._ready():
+            return ""
+        model = getattr(self, "patch_model", self.model)
+        return self._call_with_retry(lambda: model.generate_content(prompt), fallback="")
+
+    def analyze_review(self, prompt: str) -> str:
+        """
+        Sends a prompt for patch review — uses REVIEW_GENERATION_CONFIG
+        (near-zero temperature + JSON output for consistent pass/fail decisions).
+        """
+        if not self._ready():
+            return "[]"
+        model = getattr(self, "review_model", self.model)
+        return self._call_with_retry(lambda: model.generate_content(prompt))
 
     def analyze_with_cache(self, prompt: str, cache_name: str) -> str:
         """

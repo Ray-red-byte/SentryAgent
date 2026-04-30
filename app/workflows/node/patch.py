@@ -25,7 +25,7 @@ _patcher_graph = None
 def _get_patcher_graph():
     global _patcher_graph
     if _patcher_graph is None:
-        from app.workflows.subgraph.patcher_subgraph import patcher_graph
+        from app.workflows.subgraph.patch import patcher_graph
         _patcher_graph = patcher_graph
     return _patcher_graph
 
@@ -219,40 +219,120 @@ def save_patch_to_memory(state: PatchState) -> PatchState:
 def review_patch_node(state: PatchState) -> dict:
     """
     LangGraph node that critically reviews the generated patch.
-    Returns partial state updates consumed by the is_patch_approved edge.
+
+    Two-layer review:
+      Layer 1 — AST validation (fast, deterministic, free)
+        • Checks that both original and patched code parse without SyntaxError
+        • Checks that the patch didn't silently *shrink* the file (>40% line loss
+          is a red flag that the agent deleted unrelated code)
+        • Checks that the patch is not identical to the original (no-op)
+
+      Layer 2 — LLM security review (uses analyze_review → REVIEW_GENERATION_CONFIG)
+        • Rates effectiveness, correctness, and side-effect safety
+
+    On rejection, stores the anti-pattern in ChromaDB so future patches
+    avoid repeating the same mistake.
     """
+    import ast as _ast
     import json
     from app.agent.patcher import SecurityPatcher
 
     attempt = state.get("retry_count", 0) + 1
     logger.info("[REVIEW] Reviewing patch for %s (attempt %d)", state['file_path'], attempt)
 
-    if not state.get("patched_code"):
+    original_code = state.get("original_code", "")
+    patched_code  = state.get("patched_code", "")
+
+    if not patched_code:
         return {
             "is_approved": False,
             "review_feedback": "No patch was generated.",
             "retry_count": attempt,
         }
 
+    # ── Layer 1: AST validation ─────────────────────────────────────────────
+    def _ast_check(code: str, label: str):
+        try:
+            _ast.parse(code)
+            return None
+        except SyntaxError as e:
+            return f"{label} has a SyntaxError on line {e.lineno}: {e.msg}"
+
+    original_err = _ast_check(original_code, "Original code")
+    if original_err:
+        # Original was already broken — skip syntax check for patch
+        logger.warning("[REVIEW] Original code has syntax errors (%s) — skipping syntax gate.", original_err)
+    else:
+        patch_err = _ast_check(patched_code, "Patched code")
+        if patch_err:
+            feedback = (
+                f"AST VALIDATION FAILED: {patch_err}. "
+                "Fix the syntax error before resubmitting."
+            )
+            logger.warning("[REVIEW] %s", feedback)
+            _save_rejection(state, feedback)
+            return {"is_approved": False, "review_feedback": feedback, "retry_count": attempt}
+
+    # No-op check
+    if original_code.strip() == patched_code.strip():
+        feedback = "PATCH IS IDENTICAL TO ORIGINAL — no changes were made. The agent must actually modify the file."
+        logger.warning("[REVIEW] %s", feedback)
+        return {"is_approved": False, "review_feedback": feedback, "retry_count": attempt}
+
+    # Shrinkage check (>40% line loss)
+    orig_lines  = len([l for l in original_code.splitlines() if l.strip()])
+    patch_lines = len([l for l in patched_code.splitlines() if l.strip()])
+    if orig_lines > 20 and patch_lines < orig_lines * 0.6:
+        feedback = (
+            f"PATCH DELETED TOO MUCH CODE: original had {orig_lines} non-blank lines, "
+            f"patch has {patch_lines} ({patch_lines/orig_lines:.0%}). "
+            "Surgical patches should modify the vulnerable lines, not rewrite the whole file."
+        )
+        logger.warning("[REVIEW] %s", feedback)
+        _save_rejection(state, feedback)
+        return {"is_approved": False, "review_feedback": feedback, "retry_count": attempt}
+
+    # ── Layer 2: LLM security review ────────────────────────────────────────
     patcher = SecurityPatcher(root_dir=state.get("root_dir", "app"))
     review_result = patcher.review_patch(
         file_path=state["file_path"],
-        original_code=state["original_code"],
-        patched_code=state["patched_code"],
+        original_code=original_code,
+        patched_code=patched_code,
         vulnerabilities=state["vulnerabilities"],
     )
 
-    # Defensive normalisaton
     if isinstance(review_result, list):
         review_result = review_result[0] if review_result else {}
     if not isinstance(review_result, dict):
         review_result = {"is_approved": True, "feedback": "Unexpected reviewer output — auto-approved."}
 
+    is_approved    = review_result.get("is_approved", True)
+    review_feedback = review_result.get("feedback", "No feedback provided.")
+
+    if not is_approved:
+        _save_rejection(state, review_feedback)
+
     return {
-        "is_approved": review_result.get("is_approved", True),
-        "review_feedback": review_result.get("feedback", "No feedback provided."),
+        "is_approved": is_approved,
+        "review_feedback": review_feedback,
         "retry_count": attempt,
     }
+
+
+def _save_rejection(state: PatchState, feedback: str) -> None:
+    """Persist rejected patch anti-patterns to ChromaDB for future learning."""
+    try:
+        kb = SecurityKnowledgeBase()
+        kb.learn_rejection(
+            file_path=state.get("file_path", "unknown"),
+            original_code=state.get("original_code", ""),
+            rejected_patch=state.get("patched_code", ""),
+            feedback=feedback,
+            vulnerabilities=state.get("vulnerabilities", []),
+        )
+    except Exception as e:
+        logger.warning("[REVIEW] Could not save rejection anti-pattern: %s", e)
+
 
 def _read_source(full_path: str) -> str:
     """Read source safely; return empty string on failure."""

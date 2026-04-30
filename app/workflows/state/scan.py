@@ -29,15 +29,10 @@ class ScanState(TypedDict):
     current_stage: Literal[
         "init",
         "discovered",
-        "parsed",
-        "bundled",      # after security domain grouping
-        "scanned",
-        "audited",
-        "prioritized",
-        "patched",
-        "reported",
+        "scanned",   # after parse_and_scan
+        "bundled",   # after bundle_into_security_domains
         "complete",
-        "error"
+        "error",
     ]
 
     # Metadata

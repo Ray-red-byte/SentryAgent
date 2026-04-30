@@ -17,6 +17,10 @@ _REQUIRED_VULN_FIELDS = {
     "description": "No description provided.",
     "fix": "Review manually.",
     "cvss_score": 0.0,
+    # Accuracy improvement fields
+    "confidence": "medium",
+    "cwe": "",
+    "owasp": "",
 }
 
 
@@ -247,9 +251,12 @@ class SecurityAuditor:
                 vuln["cvss_score"] = float(vuln["cvss_score"])
             except (TypeError, ValueError):
                 vuln["cvss_score"] = 0.0
+            # Normalise confidence
+            if vuln.get("confidence") not in ("high", "medium", "low"):
+                vuln["confidence"] = "medium"
             normalised.append(vuln)
 
-        return normalised
+        return _deduplicate(normalised)
 
     @staticmethod
     def _strip_to_json(text: str) -> str:
@@ -257,23 +264,20 @@ class SecurityAuditor:
         Extracts the first JSON array from text, tolerating surrounding prose
         and markdown code fences.
         """
-        # 1. Strip ```json ... ``` or ``` ... ``` fences
         text = re.sub(r"```(?:json)?\s*", "", text)
         text = text.replace("```", "").strip()
 
-        # 2. Find the first '[' and the matching last ']'
         start = text.find("[")
         end = text.rfind("]")
         if start != -1 and end != -1 and end > start:
             return text[start : end + 1]
 
-        # 3. Maybe the LLM returned a single object {} instead of an array
         start = text.find("{")
         end = text.rfind("}")
         if start != -1 and end != -1 and end > start:
             return f"[{text[start:end+1]}]"
 
-        return text  # Return as-is; json.loads will fail and we'll handle it above
+        return text
 
     @staticmethod
     def _format_lessons(lessons: list) -> str:
@@ -298,3 +302,51 @@ class SecurityAuditor:
                 "fix": "Try auditing the file again.",
             }
         ]
+
+
+# ── Module-level helper — must be defined AFTER SecurityAuditor ───────────────
+
+def _deduplicate(vulns: list[dict]) -> list[dict]:
+    """
+    Remove near-duplicate vulnerability findings.
+
+    Two findings are considered duplicates when they share:
+      - The same file
+      - The same CWE (or vulnerability type when CWE is absent)
+      - Line numbers within 5 of each other
+
+    The higher-severity / higher-confidence finding wins.
+    """
+    if not vulns:
+        return vulns
+
+    _SEVERITY_RANK   = {"CRITICAL": 5, "HIGH": 4, "MEDIUM": 3, "LOW": 2, "INFO": 1, "ERROR": 0}
+    _CONFIDENCE_RANK = {"high": 3, "medium": 2, "low": 1}
+
+    kept: list[dict] = []
+    for candidate in vulns:
+        c_file = candidate.get("file", "")
+        c_key  = candidate.get("cwe") or candidate.get("type", "")
+        c_line = int(candidate.get("line") or 0)
+
+        duplicate_idx = None
+        for i, existing in enumerate(kept):
+            e_file = existing.get("file", "")
+            e_key  = existing.get("cwe") or existing.get("type", "")
+            e_line = int(existing.get("line") or 0)
+            if e_file == c_file and e_key == c_key and abs(e_line - c_line) <= 5:
+                duplicate_idx = i
+                break
+
+        if duplicate_idx is None:
+            kept.append(candidate)
+        else:
+            existing = kept[duplicate_idx]
+            c_sev  = _SEVERITY_RANK.get(candidate.get("severity", "INFO"), 1)
+            e_sev  = _SEVERITY_RANK.get(existing.get("severity", "INFO"), 1)
+            c_conf = _CONFIDENCE_RANK.get(candidate.get("confidence", "medium"), 2)
+            e_conf = _CONFIDENCE_RANK.get(existing.get("confidence", "medium"), 2)
+            if (c_sev, c_conf) > (e_sev, e_conf):
+                kept[duplicate_idx] = candidate
+
+    return kept

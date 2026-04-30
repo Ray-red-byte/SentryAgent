@@ -13,7 +13,7 @@ def get_logger(name: str) -> logging.Logger:
     configured with a sensible format and a StreamHandler so every module
     that calls get_logger() shares the same handler / format automatically.
     """
-    root = logging.getLogger("sentry_agent")
+    root = logging.getLogger("sentry_backend")
 
     # Configure the root logger once (idempotent — guard prevents double-add)
     if not root.handlers:

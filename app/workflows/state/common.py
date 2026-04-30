@@ -13,22 +13,30 @@ class Vulnerability:
     cvss_score: float = 0.0
     exploitability: float = 0.0
     fix_available: bool = False
-    
+    # Accuracy improvements
+    confidence: Literal["high", "medium", "low"] = "medium"
+    cwe: str = ""        # e.g. "CWE-89"
+    owasp: str = ""      # e.g. "A03:2021 - Injection"
+
     def priority_score(self) -> int:
-        """Calculate fix priority based on severity and exploitability."""
+        """Calculate fix priority based on severity, exploitability, and confidence."""
         base = {
             "CRITICAL": 100,
             "HIGH": 75,
             "MEDIUM": 50,
             "LOW": 25,
             "INFO": 10
-        }[self.severity]
-        
+        }.get(self.severity, 10)
+
         if self.exploitability > 0.8:
             base *= 1.5
         if self.fix_available:
             base *= 1.2
-            
+
+        # Discount low-confidence findings so they sink in priority lists
+        confidence_multiplier = {"high": 1.0, "medium": 0.85, "low": 0.6}
+        base *= confidence_multiplier.get(self.confidence, 0.85)
+
         return int(base)
 
 
