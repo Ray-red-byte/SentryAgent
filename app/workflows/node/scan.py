@@ -11,63 +11,9 @@ from app.core.parser.dependency_graph import DependencyMapper
 from app.agent.auditor import SecurityAuditor
 from app.memory.knowledge_base import SecurityKnowledgeBase
 from app.utils.logger import get_logger
+from app.config.domain import DOMAIN_HEURISTICS, SKIP_DIRS, SKIP_EXTS
 
 logger = get_logger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Security-domain heuristics
-# ---------------------------------------------------------------------------
-# Each entry maps a domain label to the keywords that signal membership.
-# path_keywords  — matched against the relative file path (lower-cased).
-# import_keywords — matched against raw import strings extracted from the file.
-# A file qualifies for a domain when ANY keyword in either list matches.
-# ---------------------------------------------------------------------------
-_DOMAIN_HEURISTICS: dict[str, dict[str, list[str]]] = {
-    "authentication": {
-        "path_keywords": [
-            "auth", "jwt", "login", "logout", "session",
-            "token", "oauth", "password", "credential",
-        ],
-        "import_keywords": [
-            "jwt", "passlib", "python_jose", "bcrypt", "oauth2", "authlib",
-        ],
-    },
-    "data_injection": {
-        "path_keywords": [
-            "database", "databases", "/db/", "model", "schema",
-            "orm", "crud", "repository", "repo", "migration",
-        ],
-        "import_keywords": [
-            "sqlalchemy", "psycopg2", "psycopg", "pymongo",
-            "databases", "tortoise", "alembic", "asyncpg",
-        ],
-    },
-    "rate_limiting": {
-        "path_keywords": ["rate", "limit", "throttle", "middleware"],
-        "import_keywords": ["slowapi", "ratelimit", "limits"],
-    },
-    "secrets_management": {
-        "path_keywords": ["config", "settings", "env", "secret", "key"],
-        "import_keywords": ["dotenv", "pydantic_settings", "decouple", "dynaconf"],
-    },
-    "input_validation": {
-        "path_keywords": ["schema", "validator", "sanitize", "serializ", "deserializ"],
-        "import_keywords": ["pydantic", "marshmallow", "cerberus", "wtforms", "voluptuous"],
-    },
-    "access_control": {
-        "path_keywords": [
-            "permission", "role", "rbac", "acl", "policy",
-            "guard", "authz", "authorization",
-        ],
-        "import_keywords": ["casbin", "authlib"],
-    },
-}
-
-
-# ---------------------------------------------------------------------------
-# Module ↔ path helpers (must mirror DependencyMapper.build_graph logic)
-# ---------------------------------------------------------------------------
 
 def _path_to_module(rel_path: str) -> str:
     """Convert a relative file path to the dot-notation module key used in the graph."""
@@ -77,17 +23,6 @@ def _path_to_module(rel_path: str) -> str:
 def _module_to_path(module: str) -> str:
     """Inverse of _path_to_module — produces an OS-native relative path."""
     return module.replace(".", os.sep) + ".py"
-
-
-# ---------------------------------------------------------------------------
-# Node 1: discover_files
-# ---------------------------------------------------------------------------
-
-_SKIP_DIRS = frozenset({
-    "__pycache__", "__MACOSX", "venv", ".venv", "env", ".env",
-    "node_modules", ".git", ".tox", "dist", "build", ".mypy_cache",
-})
-_SKIP_EXTS = frozenset({".pyc", ".pyo", ".pyd"})
 
 
 def discover_files(state: ScanState) -> ScanState:
@@ -104,10 +39,10 @@ def discover_files(state: ScanState) -> ScanState:
 
     for file_path in root_path.rglob("*.py"):
         # Skip any path that passes through a blocked directory
-        if any(part in _SKIP_DIRS for part in file_path.parts):
+        if any(part in SKIP_DIRS for part in file_path.parts):
             continue
         # Belt-and-suspenders: skip compiled extensions even if glob matched
-        if file_path.suffix in _SKIP_EXTS:
+        if file_path.suffix in SKIP_EXTS:
             continue
         files.append(str(file_path.relative_to(root_path)))
 
@@ -118,11 +53,6 @@ def discover_files(state: ScanState) -> ScanState:
         "files_to_scan": files,
         "current_stage": "discovered",
     }
-
-
-# ---------------------------------------------------------------------------
-# Node 2: parse_and_scan
-# ---------------------------------------------------------------------------
 
 def parse_and_scan(state: ScanState) -> ScanState:
     """
@@ -172,10 +102,6 @@ def parse_and_scan(state: ScanState) -> ScanState:
         "current_stage": "scanned",
     }
 
-
-# ---------------------------------------------------------------------------
-# Node 2b: bundle_into_security_domains
-# ---------------------------------------------------------------------------
 
 def bundle_into_security_domains(state: ScanState) -> ScanState:
     """
@@ -233,7 +159,7 @@ def bundle_into_security_domains(state: ScanState) -> ScanState:
         path_lower = rel_path.lower().replace("\\", "/")
         imports_str = file_import_str.get(rel_path, "")
 
-        for domain, rules in _DOMAIN_HEURISTICS.items():
+        for domain, rules in DOMAIN_HEURISTICS.items():
             path_hit = any(kw in path_lower for kw in rules["path_keywords"])
             import_hit = any(kw in imports_str for kw in rules["import_keywords"])
             if path_hit or import_hit:
@@ -283,11 +209,6 @@ def bundle_into_security_domains(state: ScanState) -> ScanState:
         "current_stage": "bundled",
     }
 
-
-# ---------------------------------------------------------------------------
-# Node 3: load_organizational_memory
-# ---------------------------------------------------------------------------
-
 def load_organizational_memory(state: ScanState) -> ScanState:
     """
     Node 3: Load relevant lessons from organizational memory (RAG).
@@ -315,11 +236,6 @@ def load_organizational_memory(state: ScanState) -> ScanState:
             "organizational_memory": [],
             "errors": existing_errors,
         }
-
-
-# ---------------------------------------------------------------------------
-# Node 4: deep_audit_high_risk_files
-# ---------------------------------------------------------------------------
 
 def deep_audit_high_risk_files(state: ScanState) -> ScanState:
     """
@@ -458,11 +374,6 @@ def deep_audit_high_risk_files(state: ScanState) -> ScanState:
         "current_stage": "audited",
     }
 
-
-# ---------------------------------------------------------------------------
-# Node 5: prioritize_vulnerabilities
-# ---------------------------------------------------------------------------
-
 def prioritize_vulnerabilities(state: ScanState) -> ScanState:
     """
     Node 5: Sort and prioritize vulnerabilities.
@@ -501,11 +412,6 @@ def prioritize_vulnerabilities(state: ScanState) -> ScanState:
         },
         "current_stage": "prioritized",
     }
-
-
-# ---------------------------------------------------------------------------
-# Node 6: generate_report
-# ---------------------------------------------------------------------------
 
 def generate_report(state: ScanState) -> ScanState:
     """
