@@ -275,6 +275,7 @@ def generate_report(state: ScanState) -> ScanState:
             for sr in state["scan_results"]
         ],
         "vulnerabilities": [],   # populated by /audit calls
+        "audit_mode": "on_demand",  # LLM audit triggered via POST /v2/audit per bundle
         "errors": state.get("errors", []),
     }
 

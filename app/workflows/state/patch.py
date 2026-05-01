@@ -27,5 +27,6 @@ class PatchState(TypedDict):
     error: Optional[str]
 
     review_feedback: Optional[str]  # Feedback from the reviewer LLM
+    user_feedback: Optional[str]    # Feedback from the human user (reject & retry)
     is_approved: bool               # Flag to determine routing
     retry_count: int                # Counter to prevent infinite loops

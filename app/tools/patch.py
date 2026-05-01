@@ -101,17 +101,17 @@ def check_syntax(file_path: str) -> str:
 @tool
 def run_security_scanner(file_path: str) -> str:
     """
-    Runs the `bandit` static security analyser on the file at file_path to
-    verify that known vulnerabilities have been resolved in the patched code.
+    Runs a static security scan on the file to verify that known vulnerabilities
+    have been resolved in the patched code.
 
-    Call this LAST in the loop, after check_syntax passes. If bandit still
-    reports HIGH or MEDIUM severity issues related to the original vulnerability,
+    Tries bandit first (HIGH severity only). If bandit is not installed, falls
+    back to the built-in PythonParser hotspot detector so the tool is always
+    functional inside the container.
+
+    Call this LAST in the loop, after check_syntax passes. If findings remain,
     refine the patch and repeat the cycle.
-
-    Returns a summary of bandit findings or "NO ISSUES" if the file is clean.
-    If bandit is not installed, falls back to a short note so the agent can
-    continue gracefully.
     """
+    # --- Primary: bandit ---
     try:
         result = subprocess.run(
             ["bandit", "-r", file_path, "-f", "text", "-ll"],  # -ll = only HIGH severity
@@ -122,19 +122,29 @@ def run_security_scanner(file_path: str) -> str:
         output = result.stdout.strip() or result.stderr.strip()
         if result.returncode == 0:
             return "SECURITY SCAN PASSED: No high-severity issues found by bandit."
-        # returncode 1 = issues found
-        # Truncate to avoid overwhelming the agent context
         return f"SECURITY SCAN FINDINGS (HIGH severity):\n{output[:2000]}"
-    except FileNotFoundError:
-        # bandit not installed in the container — degrade gracefully
-        return (
-            "bandit is not installed. Skipping automated security scan. "
-            "Ensure the patch addresses each reported vulnerability manually."
-        )
     except subprocess.TimeoutExpired:
         return "SECURITY SCAN TIMEOUT: bandit took too long. Proceed with manual review."
+    except FileNotFoundError:
+        pass  # bandit not installed — fall through to PythonParser
     except Exception as e:
         return f"SECURITY SCAN ERROR: {e}"
+
+    # --- Fallback: PythonParser hotspot detector ---
+    try:
+        from app.core.parser.python_parser import PythonParser
+        with open(file_path, "rb") as f:
+            code = f.read()
+        hotspots = PythonParser().find_security_hotspots(code)
+        if not hotspots:
+            return "SECURITY SCAN PASSED: No high-severity issues found."
+        lines = [
+            f"  Line {h['line']}: [{h['severity']}] {h['type']} — {h['snippet'][:80]}"
+            for h in hotspots
+        ]
+        return "SECURITY SCAN FINDINGS (remaining issues to fix):\n" + "\n".join(lines)
+    except Exception as e:
+        return f"SECURITY SCAN ERROR (fallback scanner): {e}"
 
 
 # ============================================================================

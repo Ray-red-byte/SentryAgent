@@ -15,6 +15,7 @@ from app.utils.auth import get_current_user
 from app.models.schemas import (
     AuditRequest,
     FixRequest,
+    FixRejectRequest,
     ScanRequest,
     ExplainRequest,
     ChatRequest
@@ -156,21 +157,17 @@ async def fix_code(
         if not str(full_target_path).startswith(str(session_path.resolve()) + os.sep):
             raise HTTPException(status_code=400, detail="Invalid file path.")
 
-        # Bundle fix uses a separate cache key so it doesn't collide with single-file fixes
-        is_bundle_fix = bool(request.bundle_name and request.involved_files and len(request.involved_files) > 1)
-        if is_bundle_fix:
-            fix_key = f"fix_result:{request.session_id}:bundle:{request.bundle_name}"
-        else:
-            fix_key = f"fix_result:{request.session_id}:{request.file_path}"
+        # Cache key MUST include file_path even for bundle fixes — otherwise
+        # the first file's patch gets served for all subsequent files in the bundle.
+        fix_key = f"fix_result:{request.session_id}:{request.file_path}"
 
         # Return cached patch if available (invalidated by /apply)
         if redis_client:
             cached = redis_client.get(fix_key)
             if cached:
-                label = request.bundle_name if is_bundle_fix else request.file_path
-                logger.info("Returning cached fix for %s", label)
+                logger.info("Returning cached fix for %s", request.file_path)
                 fixed_str = cached if isinstance(cached, str) else cached.decode()
-                return {"file": label, "fixed_code": fixed_str, "cached": True}
+                return {"file": request.file_path, "fixed_code": fixed_str, "cached": True}
 
         # Check Redis for active Gemini cache
         cache_name = None
@@ -191,13 +188,70 @@ async def fix_code(
         if redis_client:
             redis_client.setex(fix_key, 3600, fixed_content)
 
-        label = request.bundle_name if is_bundle_fix else request.file_path
-        return {"file": label, "fixed_code": fixed_content}
+        return {"file": request.file_path, "fixed_code": fixed_content}
 
     except HTTPException:
         raise
     except Exception as e:
         safe_http_error(500, "Fix generation failed due to an internal error.", e)
+
+@router.post("/fix/reject", dependencies=[Depends(get_current_user)])
+async def reject_fix(
+    request: FixRejectRequest,
+    redis_client=Depends(get_redis),
+):
+    """
+    User rejects a previously generated patch and provides feedback.
+
+    This endpoint:
+    1. Invalidates the cached fix for this file
+    2. Re-invokes patch generation with the user's feedback injected
+    3. Returns the new fixed_code for the frontend to display
+    """
+    try:
+        session_path = workspace_manager.get_workspace_path(request.session_id)
+
+        # Security: Path Traversal Check
+        full_target_path = (session_path / request.file_path).resolve()
+        if not str(full_target_path).startswith(str(session_path.resolve()) + os.sep):
+            raise HTTPException(status_code=400, detail="Invalid file path.")
+
+        # Invalidate the old fix cache so stale patches aren't served
+        fix_key = f"fix_result:{request.session_id}:{request.file_path}"
+        if redis_client:
+            redis_client.delete(fix_key)
+
+        # Check Redis for active Gemini cache
+        cache_name = None
+        if redis_client:
+            cache_name = redis_client.get(f"cache:{request.session_id}")
+
+        # Re-generate patch with user feedback
+        logger.info(
+            "User rejected fix for %s. Feedback: %s",
+            request.file_path,
+            request.feedback[:100],
+        )
+        fixed_content = await run_patch_generation(
+            session_id=request.session_id,
+            file_path=request.file_path,
+            root_dir=str(session_path),
+            cache_name=cache_name,
+            involved_files=request.involved_files or None,
+            vulnerabilities=request.vulnerabilities or [],
+            user_feedback=request.feedback,
+        )
+
+        # Cache the new patch
+        if redis_client:
+            redis_client.setex(fix_key, 3600, fixed_content)
+
+        return {"file": request.file_path, "fixed_code": fixed_content}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        safe_http_error(500, "Fix re-generation failed due to an internal error.", e)
 
 @router.post("/chat", dependencies=[Depends(get_current_user)])
 async def chat_with_code(

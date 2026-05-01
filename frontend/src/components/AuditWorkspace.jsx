@@ -24,6 +24,7 @@ const AuditWorkspace = ({ sessionId, file }) => {
     const [progress, setProgress] = useState(0);
     const [progressLabel, setProgressLabel] = useState('');
     const [bundleFixProgress, setBundleFixProgress] = useState(null);
+    const [rejectingFile, setRejectingFile] = useState(null);  // filePath being re-generated
 
     const getInitialCache = () => {
         try {
@@ -264,6 +265,51 @@ const AuditWorkspace = ({ sessionId, file }) => {
         } finally {
             setLoading(false);
             endTask(thisKey);
+        }
+    };
+
+    // ── Reject & Retry a single file ─────────────────────────────────────
+    const handleRejectFile = async (filePath, feedback) => {
+        if (rejectingFile) return; // prevent concurrent rejections
+        setRejectingFile(filePath);
+
+        try {
+            // Collect the vulnerabilities for this file from the report
+            const fileVulns = report.filter(
+                v => v.severity !== 'ERROR' && (v.file || primaryFile) === filePath
+            );
+
+            const res = await api.post('/fix/reject', {
+                session_id: sessionId,
+                file_path: filePath,
+                feedback,
+                bundle_name: bundleName,
+                involved_files: file.involved_files,
+                vulnerabilities: fileVulns,
+            });
+
+            // Apply the new fix
+            const vulnTypes = [...new Set(fileVulns.map(v => v.type).filter(Boolean))].join(', ');
+            const topSeverity = fileVulns.find(v => ['CRITICAL', 'HIGH'].includes(v.severity))?.severity || 'MEDIUM';
+            await api.post('/apply', {
+                session_id: sessionId,
+                file_path: filePath,
+                fixed_code: res.data.fixed_code,
+                vuln_type: vulnTypes || 'Security Fix',
+                severity: topSeverity,
+                cwe: '',
+            });
+
+            // Update resolved state with new patched code
+            setResolvedFiles(prev => ({
+                ...prev,
+                [filePath]: { patchedCode: res.data.fixed_code },
+            }));
+        } catch (err) {
+            console.error(`Reject & retry failed for ${filePath}:`, err);
+            alert(`Failed to regenerate fix for ${filePath}: ${err.response?.data?.detail || err.message}`);
+        } finally {
+            setRejectingFile(null);
         }
     };
 
@@ -589,7 +635,12 @@ const AuditWorkspace = ({ sessionId, file }) => {
 
                             {/* Per-file findings with resolved state */}
                             {(currentStatus === 'VULNERABILITIES_FOUND' || currentStatus === 'SECURED') && (
-                                <BundleResults report={report} resolvedFiles={resolvedFiles} />
+                                <BundleResults
+                                    report={report}
+                                    resolvedFiles={resolvedFiles}
+                                    onRejectFile={handleRejectFile}
+                                    rejectingFile={rejectingFile}
+                                />
                             )}
                         </div>
                     )}

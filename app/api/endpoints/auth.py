@@ -19,9 +19,9 @@ from app.config.settings import API_USERNAME, API_PASSWORD, JWT_SECRET_KEY as JW
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/v2")  # New API version
+router = APIRouter()
 
-@router.post("/auth/token")
+@router.post("/token")
 async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     """
     Exchange username + password for a JWT Bearer token.

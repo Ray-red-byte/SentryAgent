@@ -106,7 +106,7 @@ def generate_patch(state: PatchState) -> PatchState:
             "=== SECURITY DOMAIN BUNDLE CONTEXT (READ-ONLY) ===\n"
             "These peer files are READ-ONLY reference material. Use them to understand "
             "cross-file data flows, variable types, and DB schemas before patching. "
-            "You are NOT authorized to modify any of these files.\n\n"
+            "Do NOT modify them — your output must contain only the primary target file.\n\n"
             + "\n\n".join(peer_parts)
             + "\n=== END BUNDLE CONTEXT ===\n\n"
         )
@@ -129,16 +129,27 @@ def generate_patch(state: PatchState) -> PatchState:
         f"{vuln_header}"
     )
 
-    # NEW: Inject feedback if this is a retry
+    # Inject feedback if this is a retry (auto-reviewer)
     retry_count = state.get("retry_count", 0)
     review_feedback = state.get("review_feedback")
     
     if retry_count > 0 and review_feedback:
         initial_message += (
-            f"⚠️ **PREVIOUS PATCH REJECTED.** The reviewer provided this feedback:\n"
+            f"⚠️ **PREVIOUS PATCH REJECTED BY REVIEWER.** The reviewer provided this feedback:\n"
             f"{review_feedback}\n"
             f"Please read the original file again, fix the logic according to the feedback, and generate a new patch.\n\n"
         )
+
+    # Inject human user feedback (reject & retry from the UI)
+    user_feedback = state.get("user_feedback")
+    if user_feedback:
+        initial_message += (
+            f"🚨 **USER REJECTED THE PREVIOUS PATCH.** The developer provided this feedback:\n"
+            f'"{user_feedback}"\n'
+            f"You MUST follow the user's instructions precisely. Read the original file again "
+            f"and generate a new patch that addresses the user's specific concerns.\n\n"
+        )
+
 
     initial_message += (
         f"Follow your strict workflow: search_owasp_guidelines → read_file → "
@@ -151,22 +162,39 @@ def generate_patch(state: PatchState) -> PatchState:
         graph = _get_patcher_graph()
         result = graph.invoke({"messages": [("user", initial_message)]})
 
-        # Extract the agent's final text message
-        final_message = result["messages"][-1]
-        raw_content   = _extract_content(final_message)
+        # ──────────────────────────────────────────────────────────────────
+        # IMPORTANT: The ReAct agent modifies files on disk via its tools
+        # (write_code_patch, replace_function, apply_diff). The authoritative
+        # patched source is whatever is currently on disk — NOT the code
+        # block in the agent's conversational response, which may contain
+        # code from peer files or an incomplete version.
+        # ──────────────────────────────────────────────────────────────────
+        disk_code = _read_source(full_path)
 
-        # Pull the code block out of the agent's response
-        patched_code = _extract_code_block(raw_content)
+        if not disk_code or disk_code.strip() == original_code.strip():
+            # Agent didn't modify the file on disk (or read failed).
+            # Fallback: try to extract a code block from the response.
+            final_message = result["messages"][-1]
+            raw_content   = _extract_content(final_message)
+            patched_code  = _extract_code_block(raw_content)
 
-        # Safety net: if no code block was returned, fall back to the raw response
-        if not patched_code or len(patched_code.strip()) < 10:
-            logger.warning(
-                "[PATCH] Agent returned no parseable code block for %s — using raw response.",
-                file_path,
-            )
-            patched_code = raw_content.strip() or original_code
+            if not patched_code or len(patched_code.strip()) < 10:
+                logger.warning(
+                    "[PATCH] Agent returned no parseable code block for %s — returning original.",
+                    file_path,
+                )
+                patched_code = original_code
+            else:
+                # Write the extracted code to disk so /apply has the right content
+                try:
+                    with open(full_path, "w", encoding="utf-8") as f:
+                        f.write(patched_code)
+                except OSError:
+                    pass
+        else:
+            patched_code = disk_code
 
-        logger.info("[PATCH] ReAct agent finished. Patch size: %d chars.", len(patched_code))
+        logger.info("[PATCH] ReAct agent finished for %s. Patch size: %d chars.", file_path, len(patched_code))
 
         return {
             **state,
@@ -177,7 +205,12 @@ def generate_patch(state: PatchState) -> PatchState:
 
     except Exception as e:
         logger.error("[PATCH] ReAct agent failed for %s: %s", file_path, e)
-        logger.error("[PATCH] ReAct agent error: %s", e)
+        # Revert the file to original on error
+        try:
+            with open(full_path, "w", encoding="utf-8") as f:
+                f.write(original_code)
+        except OSError:
+            pass
         return {
             **state,
             "original_code": original_code,
@@ -185,6 +218,7 @@ def generate_patch(state: PatchState) -> PatchState:
             "current_stage": "error",
             "error": str(e),
         }
+
 
 
 # ============================================================================
@@ -200,7 +234,7 @@ def save_patch_to_memory(state: PatchState) -> PatchState:
         kb.learn_fix(
             vuln_type="Security Patch",
             description=f"ReAct patch for {state['file_path']}",
-            fix_code=state["patched_code"][:1000],
+            fix_code=state["patched_code"][:3000],
             file_path=state["file_path"],
         )
         logger.info("[MEMORY] Patch saved to knowledge base")

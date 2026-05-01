@@ -110,6 +110,7 @@ async def run_patch_generation(
     cache_name: str = None,
     involved_files: list[str] = None,
     vulnerabilities: list = None,
+    user_feedback: str = "",
 ) -> str:
     initial_state: PatchState = {
         "session_id": session_id,
@@ -126,6 +127,7 @@ async def run_patch_generation(
         "retry_count": 0,
         "is_approved": False,
         "review_feedback": None,
+        "user_feedback": user_feedback or None,
     }
     
     logger.info("Generating patch for: %s", file_path)

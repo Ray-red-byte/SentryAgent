@@ -64,7 +64,7 @@ class PythonParser:
         """
         query = self.LANGUAGE.query(query_scm)
         matches = query.matches(tree.root_node)
-        
+
         hotspots = []
         for match in matches:
             captures = match.captures if hasattr(match, "captures") else match[1]
@@ -72,16 +72,22 @@ class PythonParser:
             node = captures.get("dangerous_call")
             if not node:
                 continue
-                
+
+            mod_node = captures.get("mod")
+            mod_name = self.get_node_text(mod_node, source_code) if mod_node else None
+
+            if self._is_false_positive(node, mod_name, source_code):
+                continue
+
             code_snippet = self.get_node_text(node, source_code)
             # start_point is a tuple (row, column) in 0.21.3
             line_number = node.start_point[0] + 1
-            
+
             risk_type = "Generic Risk"
             if "system" in code_snippet or "subprocess" in code_snippet: risk_type = "Command Injection Risk"
             elif "execute" in code_snippet: risk_type = "SQL Injection Risk"
             elif "eval" in code_snippet or "exec" in code_snippet: risk_type = "Code Injection Risk"
-            
+
             hotspots.append({
                 "type": risk_type,
                 "line": line_number,
@@ -89,6 +95,103 @@ class PythonParser:
                 "severity": "HIGH"
             })
         return hotspots
+
+    # ------------------------------------------------------------------
+    # False-positive suppression helpers
+    # ------------------------------------------------------------------
+
+    def _is_false_positive(self, call_node, mod_name: str | None, source_code: bytes) -> bool:
+        """
+        Returns True when a matched call is likely safe and should be suppressed.
+
+        Rules (conservative — when in doubt, keep the finding):
+        - loads(): safe only when called as json.loads (not pickle.loads or bare loads)
+        - subprocess.run/call/popen/check_output: safe when no shell=True kwarg present
+        - execute(): safe when first arg contains no f-string / string-concat AND a
+          second parameter-binding arg (dict or tuple) is present
+        """
+        func_node = call_node.child_by_field_name("function")
+        if not func_node:
+            return False
+
+        if func_node.type == "attribute":
+            attr_node = func_node.child_by_field_name("attribute")
+            func_name = self.get_node_text(attr_node, source_code) if attr_node else None
+        else:
+            func_name = self.get_node_text(func_node, source_code)
+
+        if not func_name:
+            return False
+
+        args_node = call_node.child_by_field_name("arguments")
+
+        # json.loads is safe; pickle.loads and bare loads() are not
+        if func_name == "loads":
+            return mod_name == "json"
+
+        # subprocess.*/os.system: safe only without shell=True
+        if func_name in ("run", "call", "popen", "check_output", "check_call", "system"):
+            if args_node is None:
+                return True
+            return not self._has_shell_true(args_node, source_code)
+
+        # execute(): safe when parameterized (no dynamic string AND binding arg present)
+        if func_name == "execute":
+            if args_node is None:
+                return False
+            return self._is_parameterized_execute(args_node, source_code)
+
+        return False
+
+    def _has_shell_true(self, args_node, source_code: bytes) -> bool:
+        """Return True if the argument list contains a shell=True keyword argument."""
+        for child in args_node.children:
+            if child.type == "keyword_argument":
+                name_node = child.child_by_field_name("name")
+                value_node = child.child_by_field_name("value")
+                if name_node and value_node:
+                    if (self.get_node_text(name_node, source_code) == "shell"
+                            and self.get_node_text(value_node, source_code) == "True"):
+                        return True
+        return False
+
+    def _is_parameterized_execute(self, args_node, source_code: bytes) -> bool:
+        """
+        Return True when execute() looks parameterized (safe).
+
+        Safe: first arg has no f-string/concat AND a second binding arg exists.
+        Unsafe: first arg IS an f-string or uses + concatenation.
+        Ambiguous (single arg, plain string): still flag conservatively.
+        """
+        positional = [
+            c for c in args_node.children
+            if c.type not in ("(", ")", ",") and c.type != "keyword_argument"
+        ]
+        if not positional:
+            return True  # no args — cannot be injected
+
+        first_arg = positional[0]
+        if self._contains_dynamic_string(first_arg, source_code):
+            return False  # confirmed unsafe
+
+        # Plain/bound string with a second param-binding arg → parameterized
+        return len(positional) >= 2
+
+    def _contains_dynamic_string(self, node, source_code: bytes) -> bool:
+        """
+        Return True if the node is, or contains, an f-string or string
+        concatenation (+).  Recurses into nested calls (e.g. text(f"...")).
+        """
+        if node.type in ("f_string", "interpolation"):
+            return True
+        if node.type == "binary_operator":
+            op_node = node.child_by_field_name("operator")
+            if op_node and self.get_node_text(op_node, source_code) == "+":
+                return True
+        for child in node.children:
+            if self._contains_dynamic_string(child, source_code):
+                return True
+        return False
     
     def find_entry_points(self, source_code: bytes):
         tree = self.parse(source_code)
