@@ -10,6 +10,9 @@ import ast
 import os
 import subprocess
 from langchain_core.tools import tool
+from app.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 @tool
 def search_owasp_guidelines(query: str) -> str:
@@ -23,6 +26,7 @@ def search_owasp_guidelines(query: str) -> str:
 
     Returns a formatted string of the top matching knowledge entries.
     """
+    logger.debug("[TOOL] search_owasp_guidelines: %s", query[:80])
     try:
         from app.memory.knowledge_base import SecurityKnowledgeBase
         kb = SecurityKnowledgeBase()
@@ -44,6 +48,7 @@ def read_file(file_path: str) -> str:
     Returns the file contents as a string, or an error message if the file
     cannot be found.
     """
+    logger.debug("[TOOL] read_file: %s", file_path)
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             return f.read()
@@ -62,6 +67,7 @@ def write_code_patch(file_path: str, patched_code: str) -> str:
 
     Returns a success or error message.
     """
+    logger.info("[TOOL] write_code_patch: %s (%d chars)", file_path, len(patched_code))
     try:
         # Ensure the parent directory exists
         os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
@@ -82,6 +88,7 @@ def check_syntax(file_path: str) -> str:
 
     Returns "SYNTAX OK" on success, or a description of the SyntaxError.
     """
+    logger.debug("[TOOL] check_syntax: %s", file_path)
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             source = f.read()
@@ -111,6 +118,7 @@ def run_security_scanner(file_path: str) -> str:
     Call this LAST in the loop, after check_syntax passes. If findings remain,
     refine the patch and repeat the cycle.
     """
+    logger.info("[TOOL] run_security_scanner: %s", file_path)
     # --- Primary: bandit ---
     try:
         result = subprocess.run(
@@ -168,6 +176,7 @@ def replace_function(file_path: str, function_name: str, new_code: str) -> str:
     Returns a success or error message.
     """
     try:
+        logger.info("[TOOL] replace_function: %s in %s", function_name, file_path)
         from app.core.parser.python_parser import PythonParser
 
         with open(file_path, "rb") as f:
@@ -216,6 +225,7 @@ def replace_class_method(
     Returns a success or error message.
     """
     try:
+        logger.info("[TOOL] replace_class_method: %s.%s in %s", class_name, method_name, file_path)
         from app.core.parser.python_parser import PythonParser
 
         with open(file_path, "rb") as f:
@@ -266,6 +276,7 @@ def apply_diff(file_path: str, search_block: str, replace_block: str) -> str:
 
     Returns a success or error message.
     """
+    logger.info("[TOOL] apply_diff: %s", file_path)
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             content = f.read()
@@ -315,6 +326,7 @@ def run_unit_tests(test_file_path: str = "") -> str:
 
     Returns pass/fail status and truncated output.
     """
+    logger.info("[TOOL] run_unit_tests: %s", test_file_path or "tests/")
     try:
         cmd = ["python", "-m", "pytest", "-x", "-q", "--tb=short"]
         if test_file_path:

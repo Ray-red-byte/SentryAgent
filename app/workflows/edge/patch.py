@@ -6,7 +6,7 @@ def is_patch_approved(state: PatchState) -> str:
     """
     is_approved = state.get("is_approved", False)
     retries = state.get("retry_count", 0)
-    MAX_RETRIES = 3
+    MAX_RETRIES = 1
 
     if is_approved:
         return "approved"

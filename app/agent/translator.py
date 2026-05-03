@@ -6,7 +6,7 @@ logger = get_logger(__name__)
 
 class SecurityTranslator:
     def __init__(self):
-        self.llm = GeminiClient(model_name="models/gemini-1.5-flash")
+        self.llm = GeminiClient(model_name="models/gemini-2.5-flash")
 
     def translate_report(self, vulnerability_report: list):
         """

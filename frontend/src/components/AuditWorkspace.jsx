@@ -39,8 +39,15 @@ const AuditWorkspace = ({ sessionId, file }) => {
     const currentFileRef = useRef(null);
     const chatEndRef = useRef(null);
     const progressTimerRef = useRef(null);
+    // Tracks which domains have in-flight operations to prevent double-launch
+    // even when the user switches away (loading state is reset on nav).
+    const inFlightRef = useRef({});
 
     const { activeTasks, startTask, endTask } = useTaskContext();
+
+    // Keep a ref so async loops always read the latest activeTasks (not a stale closure snapshot)
+    const activeTasksRef = useRef(activeTasks);
+    useEffect(() => { activeTasksRef.current = activeTasks; }, [activeTasks]);
 
     // ── Derived values ──────────────────────────────────────────────────────
     const isBundleMode = Boolean(file?.bundleName);
@@ -156,16 +163,27 @@ const AuditWorkspace = ({ sessionId, file }) => {
     // ── Actions ────────────────────────────────────────────────────────────────
 
     const runAudit = async () => {
-        if (!isBundleMode || loading || activeTasks[cacheKey]) return;
+        if (!isBundleMode) return;
         const thisKey = cacheKey;
-        setLoading(true);
-        setHasAudited(false);
-        setReport([]);
-        setResolvedFiles({});
+
+        // Prevent double-launch per domain even if user has navigated away
+        // (loading state gets reset on domain switch, so we need our own guard)
+        if (inFlightRef.current[thisKey]) return;
+        inFlightRef.current[thisKey] = 'auditing';
+
+        // Update UI only if we are still viewing this domain
+        const isActive = () => currentFileRef.current === thisKey;
+
+        if (isActive()) {
+            setLoading(true);
+            setHasAudited(false);
+            setReport([]);
+            setResolvedFiles({});
+        }
 
         const label = `AI analyzing ${file.involved_files.length} files in bundle…`;
         startTask(thisKey, 'auditing', label);
-        startProgressAnimation(0, 85, label, 60000);
+        if (isActive()) startProgressAnimation(0, 85, label, 60000);
 
         try {
             const res = await api.post('/audit', {
@@ -174,30 +192,62 @@ const AuditWorkspace = ({ sessionId, file }) => {
                 bundle_name: bundleName,
                 involved_files: file.involved_files,
             });
-            if (currentFileRef.current !== thisKey) return;
 
             const raw = Array.isArray(res.data.report) ? res.data.report : [];
             const findings = raw.filter(v => v.severity !== 'ERROR');
-            setReport(findings.length > 0 ? findings : raw);
-            setHasAudited(true);
-            setProgress(100);
-            setProgressLabel('Audit complete');
+            const finalReport = findings.length > 0 ? findings : raw;
+
+            // Always persist into cache — even if the user has switched domains
+            fileCache.current[thisKey] = {
+                ...fileCache.current[thisKey],
+                report: finalReport,
+                hasAudited: true,
+            };
+            try {
+                localStorage.setItem(`sentry_session_${sessionId}`, JSON.stringify(fileCache.current));
+            } catch (e) { /* ignore */ }
+
+            // Only touch React state when still viewing this domain
+            if (isActive()) {
+                setReport(finalReport);
+                setHasAudited(true);
+                setProgress(100);
+                setProgressLabel('Audit complete');
+            }
         } catch (err) {
-            if (currentFileRef.current !== thisKey) return;
             console.error('Audit failed:', err);
-            setReport([{ severity: 'ERROR', type: 'Connection Error', description: err.response?.data?.detail || err.message, fix: '' }]);
-            setHasAudited(true);
+            const errReport = [{ severity: 'ERROR', type: 'Connection Error', description: err.response?.data?.detail || err.message, fix: '' }];
+
+            fileCache.current[thisKey] = {
+                ...fileCache.current[thisKey],
+                report: errReport,
+                hasAudited: true,
+            };
+            try {
+                localStorage.setItem(`sentry_session_${sessionId}`, JSON.stringify(fileCache.current));
+            } catch (e) { /* ignore */ }
+
+            if (isActive()) {
+                setReport(errReport);
+                setHasAudited(true);
+            }
         } finally {
             clearInterval(progressTimerRef.current);
             endTask(thisKey);
-            if (currentFileRef.current === thisKey) setLoading(false);
+            delete inFlightRef.current[thisKey];
+            if (isActive()) setLoading(false);
         }
     };
 
-    // Sequential bundle fix — skips already-resolved files on retry
+    // Sequential bundle fix — runs to completion even if user switches domains
     const runBundleFix = async () => {
-        if (loading || activeTasks[cacheKey]) return;
         const thisKey = cacheKey;
+
+        // Prevent double-launch per domain
+        if (inFlightRef.current[thisKey]) return;
+        inFlightRef.current[thisKey] = 'fixing';
+
+        const isActive = () => currentFileRef.current === thisKey;
 
         const validVulns = report.filter(v => v.severity !== 'ERROR');
         const byFile = {};
@@ -207,21 +257,43 @@ const AuditWorkspace = ({ sessionId, file }) => {
             byFile[fp].push(v);
         });
 
-        // Skip files that were already successfully patched
-        const fileGroups = Object.entries(byFile).filter(([fp]) => !resolvedFiles[fp]);
-        if (fileGroups.length === 0) return;
+        // Skip files already successfully patched (check fileCache, not just state)
+        const cachedResolved = fileCache.current[thisKey]?.resolvedFiles || {};
+        const fileGroups = Object.entries(byFile).filter(([fp]) => !cachedResolved[fp] && !resolvedFiles[fp]);
+        if (fileGroups.length === 0) {
+            delete inFlightRef.current[thisKey];
+            return;
+        }
 
-        setLoading(true);
-        setBundleFixProgress({ total: fileGroups.length, current: 0, currentFile: null, errors: [], done: false });
+        if (isActive()) {
+            setLoading(true);
+            setBundleFixProgress({ total: fileGroups.length, current: 0, currentFile: null, errors: [], skipped: [], done: false });
+        }
         startTask(thisKey, 'fixing', `Fixing ${bundleName} domain…`);
 
         const errors = [];
+        const skipped = [];
+        // Accumulates patched files so we can write to cache incrementally
+        const newlyResolved = {};
+
         try {
             for (let i = 0; i < fileGroups.length; i++) {
                 const [filePath, fileVulns] = fileGroups[i];
-                if (currentFileRef.current !== thisKey) break;
+                // NOTE: no currentFileRef check here — the loop always runs to completion
 
-                setBundleFixProgress({ total: fileGroups.length, current: i + 1, currentFile: filePath, errors, done: false });
+                // Another domain's runBundleFix already claimed this file — skip to prevent overwrites.
+                // The user can re-run "Fix Entire Domain" after the other domain finishes.
+                if (activeTasksRef.current[filePath]) {
+                    skipped.push(filePath);
+                    if (isActive()) {
+                        setBundleFixProgress(prev => ({ ...prev, current: i + 1, skipped: [...skipped] }));
+                    }
+                    continue;
+                }
+
+                if (isActive()) {
+                    setBundleFixProgress({ total: fileGroups.length, current: i + 1, currentFile: filePath, errors, skipped, done: false });
+                }
                 startTask(filePath, 'fixing', `Fixing ${filePath}…`);
 
                 try {
@@ -245,11 +317,25 @@ const AuditWorkspace = ({ sessionId, file }) => {
                         cwe: '',
                     });
 
-                    // Mark file as resolved and store the patched source for display
-                    setResolvedFiles(prev => ({
-                        ...prev,
-                        [filePath]: { patchedCode: fixRes.data.fixed_code },
-                    }));
+                    const patchEntry = { patchedCode: fixRes.data.fixed_code };
+                    newlyResolved[filePath] = patchEntry;
+
+                    // Always persist into cache — user may have navigated away
+                    fileCache.current[thisKey] = {
+                        ...fileCache.current[thisKey],
+                        resolvedFiles: {
+                            ...(fileCache.current[thisKey]?.resolvedFiles || {}),
+                            [filePath]: patchEntry,
+                        },
+                    };
+                    try {
+                        localStorage.setItem(`sentry_session_${sessionId}`, JSON.stringify(fileCache.current));
+                    } catch (e) { /* ignore */ }
+
+                    // Update React state only when still on this domain
+                    if (isActive()) {
+                        setResolvedFiles(prev => ({ ...prev, [filePath]: patchEntry }));
+                    }
                 } catch (err) {
                     console.error(`Bundle fix failed for ${filePath}:`, err);
                     errors.push(filePath);
@@ -258,13 +344,24 @@ const AuditWorkspace = ({ sessionId, file }) => {
                 }
             }
 
-            if (currentFileRef.current !== thisKey) return;
+            // Persist final download URL into cache
+            const downloadUrl = `/v2/download/${sessionId}`;
+            fileCache.current[thisKey] = {
+                ...fileCache.current[thisKey],
+                downloadUrl,
+            };
+            try {
+                localStorage.setItem(`sentry_session_${sessionId}`, JSON.stringify(fileCache.current));
+            } catch (e) { /* ignore */ }
 
-            setBundleFixProgress({ total: fileGroups.length, current: fileGroups.length, currentFile: null, errors, done: true });
-            setDownloadUrl(`/v2/download/${sessionId}`);
+            if (isActive()) {
+                setBundleFixProgress({ total: fileGroups.length, current: fileGroups.length, currentFile: null, errors, skipped, done: true });
+                setDownloadUrl(downloadUrl);
+            }
         } finally {
-            setLoading(false);
+            delete inFlightRef.current[thisKey];
             endTask(thisKey);
+            if (isActive()) setLoading(false);
         }
     };
 
@@ -629,6 +726,16 @@ const AuditWorkspace = ({ sessionId, file }) => {
                                     <span className="text-yellow-400">⚠</span>
                                     <p className="text-yellow-300">
                                         {bundleFixProgress.errors.length} file{bundleFixProgress.errors.length !== 1 ? 's' : ''} failed — click <strong>Fix Entire Domain</strong> to retry.
+                                    </p>
+                                </div>
+                            )}
+
+                            {/* Skipped files banner — shown when another domain was patching the same file */}
+                            {bundleFixProgress?.done && bundleFixProgress.skipped?.length > 0 && (
+                                <div className="flex items-start gap-3 bg-blue-900/20 border border-blue-500/30 rounded-xl p-3 text-sm">
+                                    <span className="text-blue-400 mt-0.5">ℹ</span>
+                                    <p className="text-blue-300">
+                                        {bundleFixProgress.skipped.length} file{bundleFixProgress.skipped.length !== 1 ? 's were' : ' was'} skipped — already being patched by another domain. Run <strong>Fix Entire Domain</strong> again once the other domain finishes.
                                     </p>
                                 </div>
                             )}

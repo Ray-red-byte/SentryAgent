@@ -26,12 +26,13 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 
 class SecurityPatcher:
-    def __init__(self, root_dir="app"):
+    def __init__(self, root_dir="app", session_id: str = None):
         self.root_dir = root_dir
         self.assembler = ContextAssembler(root_dir)
         self.llm = GeminiClient()
         self.prompts = PromptManager()
         self.historian = SecurityKnowledgeBase()
+        self.session_id = session_id
 
     def patch_file(
         self,
@@ -84,7 +85,7 @@ class SecurityPatcher:
             prompt_str = f"{prompt_str}\n\n{bundle_context}"
 
         logger.info("Invoking LLM for patching: %s", file_path)
-        fixed_code_raw = self.llm.analyze_patch(prompt_str)
+        fixed_code_raw = self.llm.analyze_patch(prompt_str, session_id=self.session_id)
 
         # Clean up any markdown wrapping (Gemini sometimes adds ```python)
         fixed_code = self.clean_output(fixed_code_raw)
@@ -120,7 +121,7 @@ class SecurityPatcher:
             patched_code=patched_code,
         )
 
-        response_text = self.llm.analyze_review(prompt)
+        response_text = self.llm.analyze_review(prompt, session_id=self.session_id)
 
         try:
             # Strip markdown fences if present

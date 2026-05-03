@@ -44,7 +44,7 @@ async def audit_security_bundle_async(state: AuditState) -> AuditState:
     logger.info("[AUDIT] Analyzing '%s' (%d file(s))...", label, len(involved_files))
 
     try:
-        auditor = SecurityAuditor(root_dir=state["root_dir"])
+        auditor = SecurityAuditor(root_dir=state["root_dir"], session_id=state.get("session_id"))
         cache_name = state.get("cache_name")
 
         loop = asyncio.get_event_loop()

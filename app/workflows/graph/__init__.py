@@ -31,7 +31,6 @@ async def run_full_scan(
         "current_stage": "init",
         "scan_metadata": {},
         "errors": [],
-        "organizational_memory": [],
         "config": config or {},
     }
     

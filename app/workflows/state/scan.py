@@ -39,8 +39,5 @@ class ScanState(TypedDict):
     scan_metadata: dict
     errors: Annotated[list[str], operator.add]
 
-    # Context for AI agents
-    organizational_memory: list[str]  # Past lessons from knowledge base
-
     # Configuration
     config: dict  # Scan configuration (depth, rules, etc.)

@@ -25,11 +25,12 @@ _REQUIRED_VULN_FIELDS = {
 
 
 class SecurityAuditor:
-    def __init__(self, root_dir="app"):
+    def __init__(self, root_dir="app", session_id: str = None):
         self.assembler = ContextAssembler(root_dir)
         self.llm = GeminiClient()
         self.prompts = PromptManager()
         self.historian = SecurityKnowledgeBase()
+        self.session_id = session_id
 
     # ------------------------------------------------------------------
     # PUBLIC METHODS
@@ -65,7 +66,7 @@ class SecurityAuditor:
             else base_prompt
         )
 
-        raw_response = self.llm.analyze_with_cache(final_prompt, cache_name)
+        raw_response = self.llm.analyze_with_cache(final_prompt, cache_name, session_id=self.session_id)
         return self.parse_json_response(raw_response, source_file=file_path)
 
     def audit_file(self, file_path: str):
@@ -91,7 +92,7 @@ class SecurityAuditor:
             "auditor.audit_with_context", file_path=file_path, context=enriched_context
         )
 
-        raw_response = self.llm.analyze(prompt)
+        raw_response = self.llm.analyze(prompt, session_id=self.session_id)
         return self.parse_json_response(raw_response, source_file=file_path)
 
     def audit_bundle(self, bundle_name: str, involved_files: list[str], cache_name: str = None):
@@ -129,7 +130,7 @@ class SecurityAuditor:
                 file_list=file_list,
             )
             final_prompt = f"{base_prompt}\n\n{lessons_block}" if lessons_block else base_prompt
-            raw_response = self.llm.analyze_with_cache(final_prompt, cache_name)
+            raw_response = self.llm.analyze_with_cache(final_prompt, cache_name, session_id=self.session_id)
         else:
             base_prompt = self.prompts.get_prompt(
                 "auditor.audit_bundle_with_context",
@@ -139,7 +140,7 @@ class SecurityAuditor:
                 base_prompt = f"{base_prompt}\n\n{lessons_block}"
             concatenated = self._build_concatenated_context(involved_files)
             final_prompt = f"{base_prompt}\n\n{concatenated}"
-            raw_response = self.llm.analyze(final_prompt)
+            raw_response = self.llm.analyze(final_prompt, session_id=self.session_id)
 
         return self.parse_json_response(raw_response, source_file=bundle_name)
 
@@ -177,7 +178,7 @@ class SecurityAuditor:
 
         if cache_name:
             # FAST PATH: cached context already contains the file
-            return self.llm.analyze_with_cache(prompt, cache_name)
+            return self.llm.analyze_with_cache(prompt, cache_name, session_id=self.session_id)
 
         # SLOW PATH: read the file and append its content to the prompt
         if not full_path:
@@ -187,7 +188,7 @@ class SecurityAuditor:
             with open(full_path, "r", encoding="utf-8") as f:
                 code = f.read()
             final_prompt = f"{prompt}\n\n=== FILE CONTENT ===\n{code}"
-            return self.llm.analyze(final_prompt)
+            return self.llm.analyze(final_prompt, session_id=self.session_id)
         except OSError as e:
             logger.error("Could not read %s: %s", full_path, e)
             return "Error: Could not read the file for analysis."

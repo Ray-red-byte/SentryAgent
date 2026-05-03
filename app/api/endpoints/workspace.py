@@ -8,7 +8,6 @@ from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from app.databases.postgres import get_db
 from app.databases.redis import get_redis
-from app.memory.cache_manager import GeminiCacheManager
 from app.core.workspace import WorkspaceManager
 from app.core.report_generator import ReportGenerator
 from app.utils.auth import get_current_user
@@ -24,7 +23,6 @@ workspace_manager = WorkspaceManager()
 @router.post("/upload", dependencies=[Depends(get_current_user)])
 async def upload_codebase(
     file: UploadFile = File(...),
-    redis_client=Depends(get_redis),
 ):
     """Upload and cache a codebase for scanning. Requires authentication."""
     if not file.filename.endswith(".zip"):
@@ -33,30 +31,7 @@ async def upload_codebase(
     session_id = workspace_manager.create_workspace()
     await workspace_manager.save_and_extract_code(session_id, file)
 
-    # Trigger Cache Creation
-    try:
-        session_path = workspace_manager.get_workspace_path(session_id)
-        cache_mgr = GeminiCacheManager()
-
-        # 1. Create Google Cache
-        cache_name = cache_mgr.create_cache_for_session(session_id, str(session_path))
-
-        # 2. Save Mapping to Redis
-        if redis_client:
-            redis_client.setex(
-                name=f"cache:{session_id}",
-                time=3600,  # 1 hour TTL
-                value=cache_name,
-            )
-            logger.info("Cache stored in Redis for %s", session_id)
-        else:
-            logger.warning("Redis unavailable; cache reference lost (stateless).")
-
-    except Exception as e:
-        # Non-fatal: caching is opportunistic. Log and continue.
-        logger.warning("Cache creation warning for session %s: %s", session_id, e)
-
-    return {"session_id": session_id, "message": "Uploaded & Cached."}
+    return {"session_id": session_id, "message": "Uploaded successfully."}
 
 @router.post("/apply", dependencies=[Depends(get_current_user)])
 async def apply_fix(

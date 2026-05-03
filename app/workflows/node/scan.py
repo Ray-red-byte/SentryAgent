@@ -10,7 +10,6 @@ from pathlib import Path
 from app.workflows.state import ScanState, ScanResult, Vulnerability
 from app.core.parser.python_parser import PythonParser
 from app.core.parser.dependency_graph import DependencyMapper
-from app.memory.knowledge_base import SecurityKnowledgeBase
 from app.utils.logger import get_logger
 from app.config.domain import DOMAIN_HEURISTICS, SKIP_DIRS, SKIP_EXTS
 
@@ -212,36 +211,6 @@ def bundle_into_security_domains(state: ScanState) -> ScanState:
         "security_bundles": bundles,
         "current_stage": "bundled",
     }
-
-
-def load_organizational_memory(state: ScanState) -> ScanState:
-    """
-    Node 3: Load relevant lessons from organizational memory (RAG).
-
-    Queries the knowledge base for past vulnerabilities and fixes.
-    Failures are non-fatal — scan continues with empty memory.
-    """
-    logger.info("[MEMORY] Loading organizational memory...")
-
-    try:
-        kb = SecurityKnowledgeBase()
-        lessons = kb.recall_relevant_lessons("security audit")
-        logger.info("[MEMORY] Loaded %d past lesson(s)", len(lessons))
-
-        return {
-            **state,
-            "organizational_memory": lessons,
-            "current_stage": "scanned",
-        }
-    except Exception as e:
-        logger.warning("[MEMORY] Failed to load memory: %s", e)
-        existing_errors = list(state.get("errors", []))
-        existing_errors.append(f"Memory load failed: {str(e)}")
-        return {
-            **state,
-            "organizational_memory": [],
-            "errors": existing_errors,
-        }
 
 
 def generate_report(state: ScanState) -> ScanState:

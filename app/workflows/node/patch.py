@@ -8,6 +8,7 @@ lives here. The heavy lifting is delegated to the patcher_graph subgraph.
 """
 
 import re
+import time
 from app.workflows.state import PatchState
 from app.memory.knowledge_base import SecurityKnowledgeBase
 from app.utils.logger import get_logger
@@ -50,7 +51,14 @@ def generate_patch(state: PatchState) -> PatchState:
     root_dir  = state["root_dir"]
     full_path = f"{root_dir}/{file_path}"
 
-    logger.info("[PATCH] ReAct agent patch start on: %s", file_path)
+    vuln_types = ", ".join(
+        v.get("type", "?") if isinstance(v, dict) else getattr(v, "type", "?")
+        for v in state.get("vulnerabilities", [])
+    ) or "general hardening"
+    logger.info(
+        "[PATCH] START  file=%s  vulns=%d  (%s)",
+        file_path, len(state.get("vulnerabilities", [])), vuln_types,
+    )
 
     original_code = state.get("original_code")
     if not original_code:
@@ -160,7 +168,18 @@ def generate_patch(state: PatchState) -> PatchState:
 
     try:
         graph = _get_patcher_graph()
-        result = graph.invoke({"messages": [("user", initial_message)]})
+        _t0 = time.monotonic()
+        from app.utils.cost_tracker import CostTrackingCallback
+        from app.databases.redis import get_redis
+        cost_cb = CostTrackingCallback(
+            session_id=state.get("session_id", ""),
+            model_name="gemini-2.5-flash",
+            redis_client=get_redis(),
+        )
+        result = graph.invoke(
+            {"messages": [("user", initial_message)]},
+            config={"recursion_limit": 5, "callbacks": [cost_cb]},
+        )
 
         # ──────────────────────────────────────────────────────────────────
         # IMPORTANT: The ReAct agent modifies files on disk via its tools
@@ -194,7 +213,10 @@ def generate_patch(state: PatchState) -> PatchState:
         else:
             patched_code = disk_code
 
-        logger.info("[PATCH] ReAct agent finished for %s. Patch size: %d chars.", file_path, len(patched_code))
+        logger.info(
+            "[PATCH] DONE   file=%s  elapsed=%.1fs  patch_size=%d chars",
+            file_path, time.monotonic() - _t0, len(patched_code),
+        )
 
         return {
             **state,
@@ -204,7 +226,10 @@ def generate_patch(state: PatchState) -> PatchState:
         }
 
     except Exception as e:
-        logger.error("[PATCH] ReAct agent failed for %s: %s", file_path, e)
+        logger.error(
+            "[PATCH] ERROR  file=%s  elapsed=%.1fs  error=%s",
+            file_path, time.monotonic() - _t0, e,
+        )
         # Revert the file to original on error
         try:
             with open(full_path, "w", encoding="utf-8") as f:
@@ -327,7 +352,7 @@ def review_patch_node(state: PatchState) -> dict:
         return {"is_approved": False, "review_feedback": feedback, "retry_count": attempt}
 
     # ── Layer 2: LLM security review ────────────────────────────────────────
-    patcher = SecurityPatcher(root_dir=state.get("root_dir", "app"))
+    patcher = SecurityPatcher(root_dir=state.get("root_dir", "app"), session_id=state.get("session_id"))
     review_result = patcher.review_patch(
         file_path=state["file_path"],
         original_code=original_code,

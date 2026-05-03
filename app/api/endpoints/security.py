@@ -3,6 +3,7 @@ import json
 import logging
 from fastapi import APIRouter, HTTPException, Depends
 from app.databases.redis import get_redis
+from app.memory.cache_manager import GeminiCacheManager
 from app.workflows.graph import (
     run_full_scan,
     run_file_audit,
@@ -11,7 +12,7 @@ from app.workflows.graph import (
     run_chat,
 )
 from app.core.workspace import WorkspaceManager
-from app.utils.auth import get_current_user
+from app.utils.auth import get_current_user, fix_cache_key
 from app.models.schemas import (
     AuditRequest,
     FixRequest,
@@ -98,13 +99,24 @@ async def audit_code(
                 logger.info("Returning cached audit for %s", request.file_path)
                 return {"file": request.file_path, "report": json.loads(cached), "cached": True}
 
-        # Check Redis for active Gemini cache
+        # Check Redis for active Gemini cache; create lazily for bundle requests
         cache_name = None
+        is_bundle = request.involved_files and len(request.involved_files) > 1
         if redis_client:
             cache_name = redis_client.get(f"cache:{request.session_id}")
+        if is_bundle and cache_name is None:
+            try:
+                cache_mgr = GeminiCacheManager()
+                cache_name = cache_mgr.create_cache_for_session(
+                    request.session_id, str(session_path)
+                )
+                if redis_client:
+                    redis_client.setex(f"cache:{request.session_id}", 3600, cache_name)
+                    logger.info("Lazy cache created for bundle audit, session %s", request.session_id)
+            except Exception as e:
+                logger.warning("Lazy cache creation failed for session %s: %s", request.session_id, e)
 
         # Run the LangGraph workflow — bundle or single-file
-        is_bundle = request.involved_files and len(request.involved_files) > 1
         if is_bundle:
             report = await run_bundle_audit(
                 session_id=request.session_id,
@@ -157,9 +169,7 @@ async def fix_code(
         if not str(full_target_path).startswith(str(session_path.resolve()) + os.sep):
             raise HTTPException(status_code=400, detail="Invalid file path.")
 
-        # Cache key MUST include file_path even for bundle fixes — otherwise
-        # the first file's patch gets served for all subsequent files in the bundle.
-        fix_key = f"fix_result:{request.session_id}:{request.file_path}"
+        fix_key = fix_cache_key(request.session_id, request.file_path, request.vulnerabilities)
 
         # Return cached patch if available (invalidated by /apply)
         if redis_client:
@@ -169,10 +179,22 @@ async def fix_code(
                 fixed_str = cached if isinstance(cached, str) else cached.decode()
                 return {"file": request.file_path, "fixed_code": fixed_str, "cached": True}
 
-        # Check Redis for active Gemini cache
+        # Check Redis for active Gemini cache; create lazily for bundle fix requests
         cache_name = None
+        is_bundle_fix = request.involved_files and len(request.involved_files) > 1
         if redis_client:
             cache_name = redis_client.get(f"cache:{request.session_id}")
+        if is_bundle_fix and cache_name is None:
+            try:
+                cache_mgr = GeminiCacheManager()
+                cache_name = cache_mgr.create_cache_for_session(
+                    request.session_id, str(session_path)
+                )
+                if redis_client:
+                    redis_client.setex(f"cache:{request.session_id}", 3600, cache_name)
+                    logger.info("Lazy cache created for bundle fix, session %s", request.session_id)
+            except Exception as e:
+                logger.warning("Lazy cache creation failed for session %s: %s", request.session_id, e)
 
         # Run the LangGraph workflow — pass bundle context + vulnerabilities when available
         fixed_content = await run_patch_generation(
@@ -216,15 +238,27 @@ async def reject_fix(
         if not str(full_target_path).startswith(str(session_path.resolve()) + os.sep):
             raise HTTPException(status_code=400, detail="Invalid file path.")
 
-        # Invalidate the old fix cache so stale patches aren't served
-        fix_key = f"fix_result:{request.session_id}:{request.file_path}"
+        # Invalidate the cached patch for this exact vuln set
+        fix_key = fix_cache_key(request.session_id, request.file_path, request.vulnerabilities)
         if redis_client:
             redis_client.delete(fix_key)
 
-        # Check Redis for active Gemini cache
+        # Check Redis for active Gemini cache; create lazily for bundle re-fix requests
         cache_name = None
+        is_bundle_refix = request.involved_files and len(request.involved_files) > 1
         if redis_client:
             cache_name = redis_client.get(f"cache:{request.session_id}")
+        if is_bundle_refix and cache_name is None:
+            try:
+                cache_mgr = GeminiCacheManager()
+                cache_name = cache_mgr.create_cache_for_session(
+                    request.session_id, str(session_path)
+                )
+                if redis_client:
+                    redis_client.setex(f"cache:{request.session_id}", 3600, cache_name)
+                    logger.info("Lazy cache created for bundle re-fix, session %s", request.session_id)
+            except Exception as e:
+                logger.warning("Lazy cache creation failed for session %s: %s", request.session_id, e)
 
         # Re-generate patch with user feedback
         logger.info(

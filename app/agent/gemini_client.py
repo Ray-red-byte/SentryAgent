@@ -71,7 +71,7 @@ class GeminiClient:
                 generation_config=JSON_GENERATION_CONFIG,
             )
             
-    def analyze(self, prompt: str) -> str:
+    def analyze(self, prompt: str, session_id: str = None) -> str:
         """
         Sends a prompt to Gemini and returns the text response.
         Used for audit and review calls — uses JSON_GENERATION_CONFIG.
@@ -79,9 +79,14 @@ class GeminiClient:
         """
         if not self._ready():
             return "[]"
-        return self._call_with_retry(lambda: self.model.generate_content(prompt))
+        model_name = getattr(self.model, "model_name", "unknown")
+        return self._call_with_retry(
+            lambda: self.model.generate_content(prompt),
+            model_name=model_name,
+            session_id=session_id,
+        )
 
-    def analyze_patch(self, prompt: str) -> str:
+    def analyze_patch(self, prompt: str, session_id: str = None) -> str:
         """
         Sends a prompt for patch generation — uses PATCH_GENERATION_CONFIG
         (plain text, slightly higher temperature for creative fix patterns).
@@ -89,9 +94,15 @@ class GeminiClient:
         if not self._ready():
             return ""
         model = getattr(self, "patch_model", self.model)
-        return self._call_with_retry(lambda: model.generate_content(prompt), fallback="")
+        model_name = getattr(model, "model_name", "unknown")
+        return self._call_with_retry(
+            lambda: model.generate_content(prompt),
+            fallback="",
+            model_name=model_name,
+            session_id=session_id,
+        )
 
-    def analyze_review(self, prompt: str) -> str:
+    def analyze_review(self, prompt: str, session_id: str = None) -> str:
         """
         Sends a prompt for patch review — uses REVIEW_GENERATION_CONFIG
         (near-zero temperature + JSON output for consistent pass/fail decisions).
@@ -99,9 +110,14 @@ class GeminiClient:
         if not self._ready():
             return "[]"
         model = getattr(self, "review_model", self.model)
-        return self._call_with_retry(lambda: model.generate_content(prompt))
+        model_name = getattr(model, "model_name", "unknown")
+        return self._call_with_retry(
+            lambda: model.generate_content(prompt),
+            model_name=model_name,
+            session_id=session_id,
+        )
 
-    def analyze_with_cache(self, prompt: str, cache_name: str) -> str:
+    def analyze_with_cache(self, prompt: str, cache_name: str, session_id: str = None) -> str:
         """
         Uses an existing Gemini Context Cache to answer the prompt.
         Falls back to standard `analyze()` if the cache is unavailable.
@@ -116,13 +132,18 @@ class GeminiClient:
                 generation_config=JSON_GENERATION_CONFIG,
             )
             logger.info("Querying cache: %s", cache_name)
-            return self._call_with_retry(lambda: cached_model.generate_content(prompt))
+            model_name = getattr(cached_model, "model_name", getattr(self.model, "model_name", "unknown"))
+            return self._call_with_retry(
+                lambda: cached_model.generate_content(prompt),
+                model_name=model_name,
+                session_id=session_id,
+            )
 
         except Exception as e:
             logger.warning(
                 "Cache %s unavailable (%s). Falling back to standard call.", cache_name, e
             )
-            return self.analyze(prompt)
+            return self.analyze(prompt, session_id=session_id)
 
     def generate_content_with_cache(self, prompt: str, cache_name: str) -> str:
         """
@@ -147,15 +168,38 @@ class GeminiClient:
             convert_system_message_to_human=True,
         )
     
-    def _call_with_retry(self, call_fn, fallback: str = "[]", max_retries: int = 3) -> str:
+    def _call_with_retry(
+        self,
+        call_fn,
+        fallback: str = "[]",
+        max_retries: int = 3,
+        session_id: str = None,
+        model_name: str = None,
+    ) -> str:
         """
         Calls call_fn() and retries on 429 resource-exhausted errors.
         Waits: 15s → 30s → 60s between attempts.
+        Captures usage_metadata before _extract_text so billing is tracked
+        even when the response text is blocked/empty.
         """
         wait_times = [15, 30, 60]
         for attempt in range(max_retries + 1):
             try:
                 response = call_fn()
+
+                # Track usage before _extract_text; the latter can raise on blocked responses
+                try:
+                    from app.utils.cost_tracker import log_and_track_usage
+                    from app.databases.redis import get_redis
+                    log_and_track_usage(
+                        session_id=session_id,
+                        model_name=model_name or "unknown",
+                        usage_metadata=getattr(response, "usage_metadata", None),
+                        redis_client=get_redis() if session_id else None,
+                    )
+                except Exception as track_err:
+                    logger.debug("[COST] Tracking error (non-fatal): %s", track_err)
+
                 return self._extract_text(response)
             except Exception as e:
                 err_str = str(e)
