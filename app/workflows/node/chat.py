@@ -4,10 +4,9 @@ Each node is a pure function that takes state and returns updated state.
 """
 from app.workflows.state import ChatState
 from app.agent.auditor import SecurityAuditor
+from app.utils.logger import get_logger
 
-import logging
-
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 def run_chat_node(state: ChatState) -> ChatState:
     """
@@ -15,7 +14,7 @@ def run_chat_node(state: ChatState) -> ChatState:
     Uses the Gemini cache (fast path) when available, otherwise reads the file
     directly (slow path).
     """
-    print(f"💬 [CHAT] Processing query for {state['file_path']}...")
+    logger.info("[CHAT] Processing query for %s...", state['file_path'])
 
     try:
         auditor = SecurityAuditor(root_dir=state["root_dir"])
@@ -31,7 +30,7 @@ def run_chat_node(state: ChatState) -> ChatState:
             full_path=full_path,
         )
 
-        print("✅ [CHAT] Response generated")
+        logger.info("[CHAT] Response generated")
 
         return {
             **state,
@@ -40,7 +39,7 @@ def run_chat_node(state: ChatState) -> ChatState:
         }
 
     except Exception as e:
-        print(f"❌ [CHAT] Error: {e}")
+        logger.error("[CHAT] Error: %s", e)
         return {
             **state,
             "response": f"Error: {str(e)}",

@@ -12,6 +12,10 @@ import os
 import uuid
 import chromadb
 from app.knowledge.security import KNOWLEDGE_ENTRIES
+from app.utils.logger import get_logger
+from app.config.settings import CHROMA_HOST
+
+logger = get_logger(__name__)
 
 COLLECTION_NAME = "security_knowledge_base"
 
@@ -21,10 +25,10 @@ COLLECTION_NAME = "security_knowledge_base"
 
 def seed(force: bool = False):
     """Seed the ChromaDB knowledge base. Skips if already seeded (unless force=True)."""
-    host = os.getenv("CHROMA_HOST", "localhost")
+    host = CHROMA_HOST
     port = 8000 if host == "chromadb_server" else 8001
 
-    print(f"🔗 Connecting to ChromaDB at {host}:{port}…")
+    logger.info("Connecting to ChromaDB at %s:%s…", host, port)
     client = chromadb.HttpClient(host=host, port=port)
     collection = client.get_or_create_collection(
         name=COLLECTION_NAME,
@@ -33,15 +37,15 @@ def seed(force: bool = False):
 
     existing = collection.count()
     if existing > 0 and not force:
-        print(f"✅ Knowledge base already has {existing} entries. Use --force to re-seed.")
+        logger.info("Knowledge base already has %d entries. Use --force to re-seed.", existing)
         return
 
     if force and existing > 0:
-        print(f"🗑️  Clearing {existing} existing entries…")
+        logger.info("Clearing %d existing entries…", existing)
         client.delete_collection(COLLECTION_NAME)
         collection = client.get_or_create_collection(name=COLLECTION_NAME)
 
-    print(f"📚 Seeding {len(KNOWLEDGE_ENTRIES)} cybersecurity knowledge entries…")
+    logger.info("Seeding %d cybersecurity knowledge entries…", len(KNOWLEDGE_ENTRIES))
 
     ids, documents, metadatas = [], [], []
 
@@ -64,7 +68,7 @@ def seed(force: bool = False):
         })
 
     collection.add(ids=ids, documents=documents, metadatas=metadatas)
-    print(f"✅ Seeded {len(KNOWLEDGE_ENTRIES)} entries into '{COLLECTION_NAME}'.")
+    logger.info("Seeded %d entries into '%s'.", len(KNOWLEDGE_ENTRIES), COLLECTION_NAME)
 
 
 if __name__ == "__main__":

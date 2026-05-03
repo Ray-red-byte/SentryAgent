@@ -26,19 +26,28 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 
 class SecurityPatcher:
-    def __init__(self, root_dir="app"):
+    def __init__(self, root_dir="app", session_id: str = None):
         self.root_dir = root_dir
         self.assembler = ContextAssembler(root_dir)
         self.llm = GeminiClient()
         self.prompts = PromptManager()
         self.historian = SecurityKnowledgeBase()
+        self.session_id = session_id
 
-    def patch_file(self, file_path: str, cache_name: str = None) -> str:
+    def patch_file(
+        self,
+        file_path: str,
+        cache_name: str = None,
+        involved_files: list[str] = None,
+    ) -> str:
         """
         Generates a security fix for the given file using a direct LLM call.
 
         - FAST PATH: Uses Gemini Context Cache if cache_name is provided.
         - SLOW PATH: Manually builds context if no cache.
+        - If involved_files contains additional files (security domain bundle),
+          their source is appended as bundle context so the LLM can trace
+          cross-file data flows before patching.
 
         Returns the patched file content as a string.
         """
@@ -47,7 +56,7 @@ class SecurityPatcher:
         # Read the original source
         original_code = self._read_file(file_path)
 
-        # Gather RAG context — past lessons about the same vulnerability patterns
+        # RAG: past lessons for the primary target file
         lessons = self.historian.recall_for_file(file_path, code_snippet=original_code)
         lessons_block = self._format_lessons(lessons) if lessons else ""
 
@@ -70,8 +79,13 @@ class SecurityPatcher:
             context=context_prompt,
         )
 
+        # Append cross-file bundle context after .format() to avoid brace-collision
+        bundle_context = self._build_bundle_context(file_path, involved_files)
+        if bundle_context:
+            prompt_str = f"{prompt_str}\n\n{bundle_context}"
+
         logger.info("Invoking LLM for patching: %s", file_path)
-        fixed_code_raw = self.llm.analyze(prompt_str)
+        fixed_code_raw = self.llm.analyze_patch(prompt_str, session_id=self.session_id)
 
         # Clean up any markdown wrapping (Gemini sometimes adds ```python)
         fixed_code = self.clean_output(fixed_code_raw)
@@ -94,19 +108,20 @@ class SecurityPatcher:
         text = re.sub(r"\n?```\s*$", "", text, flags=re.MULTILINE)
         return text.strip()
 
-    def review_patch(self, original_code: str, patched_code: str, vulnerabilities: list) -> dict:
+    def review_patch(self, file_path: str, original_code: str, patched_code: str, vulnerabilities: list) -> dict:
         """
         Acts as a Senior Reviewer to ensure the patch is safe, effective, and
         not over-engineered.  Returns a dict with keys: is_approved, feedback.
         """
         prompt = self.prompts.get_prompt(
             "patcher.review",
-            vulnerabilities=json.dumps(vulnerabilities, indent=2),
+            file_path=file_path,
+            vulnerability_description=json.dumps(vulnerabilities, indent=2),
             original_code=original_code,
             patched_code=patched_code,
         )
 
-        response_text = self.llm.analyze(prompt)
+        response_text = self.llm.analyze_review(prompt, session_id=self.session_id)
 
         try:
             # Strip markdown fences if present
@@ -129,6 +144,31 @@ class SecurityPatcher:
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def _build_bundle_context(self, primary_file: str, involved_files: list[str] | None) -> str:
+        """
+        Read all bundle files except the primary target and return them as a
+        labelled context block. Appended *after* prompt.format() to avoid
+        KeyError on brace characters in source code.
+        """
+        if not involved_files:
+            return ""
+        peers = [fp for fp in involved_files if fp != primary_file]
+        if not peers:
+            return ""
+
+        parts = []
+        for fp in peers:
+            code = self._read_file(fp)
+            parts.append(f"=== BUNDLE FILE: {fp} ===\n{code or '[Could not read]'}")
+
+        return (
+            "=== SECURITY DOMAIN BUNDLE CONTEXT ===\n"
+            "Use these peer files to understand cross-file data flows, "
+            "variable types, and schemas before patching.\n\n"
+            + "\n\n".join(parts)
+            + "\n=== END BUNDLE CONTEXT ==="
+        )
 
     def _read_file(self, file_path: str) -> str:
         """Read the target file from the workspace root."""

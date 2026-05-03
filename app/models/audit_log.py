@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, ForeignKey, JSON, DateTime
+from sqlalchemy import Column, String, Integer, Float, ForeignKey, JSON, DateTime
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from app.databases.postgres import Base
@@ -8,7 +8,8 @@ class AuditSession(Base):
 
     id = Column(String, primary_key=True, index=True) # UUID
     created_at = Column(DateTime, default=datetime.utcnow)
-    
+    total_cost = Column(Float, default=0.0)
+
     # Relationship to logs
     logs = relationship("AuditLog", back_populates="session")
 

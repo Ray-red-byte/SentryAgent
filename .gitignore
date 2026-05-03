@@ -95,3 +95,7 @@ db_storage/
 *.swo
 
 /test
+
+.claudeignore
+
+/test_backend

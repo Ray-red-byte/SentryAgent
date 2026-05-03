@@ -17,15 +17,20 @@ _REQUIRED_VULN_FIELDS = {
     "description": "No description provided.",
     "fix": "Review manually.",
     "cvss_score": 0.0,
+    # Accuracy improvement fields
+    "confidence": "medium",
+    "cwe": "",
+    "owasp": "",
 }
 
 
 class SecurityAuditor:
-    def __init__(self, root_dir="app"):
+    def __init__(self, root_dir="app", session_id: str = None):
         self.assembler = ContextAssembler(root_dir)
         self.llm = GeminiClient()
         self.prompts = PromptManager()
         self.historian = SecurityKnowledgeBase()
+        self.session_id = session_id
 
     # ------------------------------------------------------------------
     # PUBLIC METHODS
@@ -61,7 +66,7 @@ class SecurityAuditor:
             else base_prompt
         )
 
-        raw_response = self.llm.analyze_with_cache(final_prompt, cache_name)
+        raw_response = self.llm.analyze_with_cache(final_prompt, cache_name, session_id=self.session_id)
         return self.parse_json_response(raw_response, source_file=file_path)
 
     def audit_file(self, file_path: str):
@@ -84,11 +89,75 @@ class SecurityAuditor:
             enriched_context = context
 
         prompt = self.prompts.get_prompt(
-            "auditor.audit_with_context", context=enriched_context
+            "auditor.audit_with_context", file_path=file_path, context=enriched_context
         )
 
-        raw_response = self.llm.analyze(prompt)
+        raw_response = self.llm.analyze(prompt, session_id=self.session_id)
         return self.parse_json_response(raw_response, source_file=file_path)
+
+    def audit_bundle(self, bundle_name: str, involved_files: list[str], cache_name: str = None):
+        """
+        Audit a security-domain bundle (one or more files) as a single prompt.
+
+        Fast path (cache_name provided): sends only the file list; Gemini locates
+        the files in its cached context.
+        Slow path: concatenates all file contents and appends them after the
+        rendered prompt to avoid brace-collision with .format().
+        """
+        logger.info("Auditor auditing bundle '%s' (%d files)", bundle_name, len(involved_files))
+
+        # RAG: recall lessons relevant to any file in the bundle
+        past_lessons = []
+        for fp in involved_files:
+            import os
+            full_path = os.path.join(self.assembler.root_dir, fp)
+            code_snippet = ""
+            if os.path.exists(full_path):
+                try:
+                    with open(full_path, "r", encoding="utf-8") as f:
+                        code_snippet = f.read(600)
+                except Exception:
+                    pass
+            past_lessons.extend(self.historian.recall_for_file(fp, code_snippet=code_snippet))
+
+        lessons_block = self._format_lessons(past_lessons)
+        file_list = "\n".join(f"- {fp}" for fp in involved_files)
+
+        if cache_name:
+            base_prompt = self.prompts.get_prompt(
+                "auditor.audit_bundle_with_cache",
+                bundle_name=bundle_name,
+                file_list=file_list,
+            )
+            final_prompt = f"{base_prompt}\n\n{lessons_block}" if lessons_block else base_prompt
+            raw_response = self.llm.analyze_with_cache(final_prompt, cache_name, session_id=self.session_id)
+        else:
+            base_prompt = self.prompts.get_prompt(
+                "auditor.audit_bundle_with_context",
+                bundle_name=bundle_name,
+            )
+            if lessons_block:
+                base_prompt = f"{base_prompt}\n\n{lessons_block}"
+            concatenated = self._build_concatenated_context(involved_files)
+            final_prompt = f"{base_prompt}\n\n{concatenated}"
+            raw_response = self.llm.analyze(final_prompt, session_id=self.session_id)
+
+        return self.parse_json_response(raw_response, source_file=bundle_name)
+
+    def _build_concatenated_context(self, involved_files: list[str]) -> str:
+        """Concatenate all files in the bundle into one context block."""
+        import os
+        parts = []
+        for fp in involved_files:
+            full_path = os.path.join(self.assembler.root_dir, fp)
+            try:
+                with open(full_path, "r", encoding="utf-8") as f:
+                    code = f.read()
+                parts.append(f"=== FILE: {fp} ===\n{code}")
+            except OSError as e:
+                logger.warning("Could not read %s: %s", fp, e)
+                parts.append(f"=== FILE: {fp} ===\n[Could not read file: {e}]")
+        return "\n\n".join(parts)
 
     def chat_with_file(
         self,
@@ -109,7 +178,7 @@ class SecurityAuditor:
 
         if cache_name:
             # FAST PATH: cached context already contains the file
-            return self.llm.analyze_with_cache(prompt, cache_name)
+            return self.llm.analyze_with_cache(prompt, cache_name, session_id=self.session_id)
 
         # SLOW PATH: read the file and append its content to the prompt
         if not full_path:
@@ -119,7 +188,7 @@ class SecurityAuditor:
             with open(full_path, "r", encoding="utf-8") as f:
                 code = f.read()
             final_prompt = f"{prompt}\n\n=== FILE CONTENT ===\n{code}"
-            return self.llm.analyze(final_prompt)
+            return self.llm.analyze(final_prompt, session_id=self.session_id)
         except OSError as e:
             logger.error("Could not read %s: %s", full_path, e)
             return "Error: Could not read the file for analysis."
@@ -183,9 +252,12 @@ class SecurityAuditor:
                 vuln["cvss_score"] = float(vuln["cvss_score"])
             except (TypeError, ValueError):
                 vuln["cvss_score"] = 0.0
+            # Normalise confidence
+            if vuln.get("confidence") not in ("high", "medium", "low"):
+                vuln["confidence"] = "medium"
             normalised.append(vuln)
 
-        return normalised
+        return _deduplicate(normalised)
 
     @staticmethod
     def _strip_to_json(text: str) -> str:
@@ -193,23 +265,20 @@ class SecurityAuditor:
         Extracts the first JSON array from text, tolerating surrounding prose
         and markdown code fences.
         """
-        # 1. Strip ```json ... ``` or ``` ... ``` fences
         text = re.sub(r"```(?:json)?\s*", "", text)
         text = text.replace("```", "").strip()
 
-        # 2. Find the first '[' and the matching last ']'
         start = text.find("[")
         end = text.rfind("]")
         if start != -1 and end != -1 and end > start:
             return text[start : end + 1]
 
-        # 3. Maybe the LLM returned a single object {} instead of an array
         start = text.find("{")
         end = text.rfind("}")
         if start != -1 and end != -1 and end > start:
             return f"[{text[start:end+1]}]"
 
-        return text  # Return as-is; json.loads will fail and we'll handle it above
+        return text
 
     @staticmethod
     def _format_lessons(lessons: list) -> str:
@@ -234,3 +303,51 @@ class SecurityAuditor:
                 "fix": "Try auditing the file again.",
             }
         ]
+
+
+# ── Module-level helper — must be defined AFTER SecurityAuditor ───────────────
+
+def _deduplicate(vulns: list[dict]) -> list[dict]:
+    """
+    Remove near-duplicate vulnerability findings.
+
+    Two findings are considered duplicates when they share:
+      - The same file
+      - The same CWE (or vulnerability type when CWE is absent)
+      - Line numbers within 5 of each other
+
+    The higher-severity / higher-confidence finding wins.
+    """
+    if not vulns:
+        return vulns
+
+    _SEVERITY_RANK   = {"CRITICAL": 5, "HIGH": 4, "MEDIUM": 3, "LOW": 2, "INFO": 1, "ERROR": 0}
+    _CONFIDENCE_RANK = {"high": 3, "medium": 2, "low": 1}
+
+    kept: list[dict] = []
+    for candidate in vulns:
+        c_file = candidate.get("file", "")
+        c_key  = candidate.get("cwe") or candidate.get("type", "")
+        c_line = int(candidate.get("line") or 0)
+
+        duplicate_idx = None
+        for i, existing in enumerate(kept):
+            e_file = existing.get("file", "")
+            e_key  = existing.get("cwe") or existing.get("type", "")
+            e_line = int(existing.get("line") or 0)
+            if e_file == c_file and e_key == c_key and abs(e_line - c_line) <= 5:
+                duplicate_idx = i
+                break
+
+        if duplicate_idx is None:
+            kept.append(candidate)
+        else:
+            existing = kept[duplicate_idx]
+            c_sev  = _SEVERITY_RANK.get(candidate.get("severity", "INFO"), 1)
+            e_sev  = _SEVERITY_RANK.get(existing.get("severity", "INFO"), 1)
+            c_conf = _CONFIDENCE_RANK.get(candidate.get("confidence", "medium"), 2)
+            e_conf = _CONFIDENCE_RANK.get(existing.get("confidence", "medium"), 2)
+            if (c_sev, c_conf) > (e_sev, e_conf):
+                kept[duplicate_idx] = candidate
+
+    return kept

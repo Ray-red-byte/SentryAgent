@@ -2,13 +2,17 @@ import os
 import datetime
 import google.generativeai as genai
 from google.generativeai import caching
+from app.utils.logger import get_logger
+from app.config.settings import GEMINI_API_KEY
+
+logger = get_logger(__name__)
 
 class GeminiCacheManager:
-    def __init__(self, api_key=None):
-        self.api_key = api_key or os.getenv("GEMINI_API_KEY")
+    def __init__(self):
+        self.api_key = GEMINI_API_KEY
         
         if not self.api_key:
-            print("❌ CRITICAL: GEMINI_API_KEY is missing. Caching will fail.")
+            logger.critical("GEMINI_API_KEY is missing. Caching will fail.")
         else:
             genai.configure(api_key=self.api_key)
 
@@ -21,7 +25,7 @@ class GeminiCacheManager:
         file_count = 0
         
         # 1. Walk the directory and collect code
-        print(f"📦 Packaging session {session_id} for Gemini Cache...")
+        logger.info("Packaging session %s for Gemini Cache...", session_id)
         for root, _, files in os.walk(root_dir):
             for file in files:
                 if file.endswith(".py"):
@@ -33,11 +37,11 @@ class GeminiCacheManager:
                         with open(path, "r", encoding="utf-8") as f:
                             content = f.read()
                             # Tagging the file so the model knows what it's looking at
-                            tagged_content = f"\n\n--- START FILE: {rel_path} ---\n{content}\n--- END FILE: {rel_path} ---\n"
+                            tagged_content = f"\n\n<user_code file=\"{rel_path}\">\n{content}\n</user_code>\n"
                             all_code_content.append(tagged_content)
                             file_count += 1
                     except Exception as e:
-                        print(f"⚠️ Skipping {rel_path}: {e}")
+                        logger.warning("Skipping %s: %s", rel_path, e)
 
         if not all_code_content:
             raise ValueError("No Python files found in this session.")
@@ -47,7 +51,7 @@ class GeminiCacheManager:
         # but text concatenation is faster for <100 files.
         full_text = "".join(all_code_content)
         
-        print(f"🚀 Uploading {file_count} files to Gemini Cache...")
+        logger.info("Uploading %d files to Gemini Cache...", file_count)
         
         cache = caching.CachedContent.create(
             model='models/gemini-2.5-flash', # Must match the model used in Client
@@ -57,5 +61,5 @@ class GeminiCacheManager:
             ttl=datetime.timedelta(minutes=60),
         )
         
-        print(f"✅ Cache Created: {cache.name}")
+        logger.info("Cache created: %s", cache.name)
         return cache.name

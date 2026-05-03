@@ -4,37 +4,15 @@ import time
 import logging
 import google.generativeai as genai
 from langchain_google_genai import ChatGoogleGenerativeAI
+from app.config.settings import GEMINI_API_KEY
+
+from app.config.gemini import CACHE_MODEL, PREFERRED_MODELS, JSON_GENERATION_CONFIG, PATCH_GENERATION_CONFIG, REVIEW_GENERATION_CONFIG
 
 logger = logging.getLogger(__name__)
 
-# The models the cache manager creates caches for — must match here exactly.
-_CACHE_MODEL = "models/gemini-2.5-flash"
-
-# Preferred model order for non-cached calls
-_PREFERRED_MODELS = [
-    "models/gemini-2.5-flash",
-    "models/gemini-2.0-flash",
-    "models/gemini-1.5-flash-latest",
-    "models/gemini-1.5-flash",
-    "models/gemini-1.5-flash-002",
-    "models/gemini-1.5-pro",
-    "models/gemini-pro",
-    "models/gemini-1.0-pro",
-]
-
-# Generation config that strongly steers toward clean JSON output.
-# response_mime_type="application/json" asks Gemini to constrain its output
-# to valid JSON when the model supports it (1.5+).
-_JSON_GENERATION_CONFIG = genai.types.GenerationConfig(
-    temperature=0.1,          # Low temperature → more deterministic, less hallucination
-    top_p=0.95,
-    candidate_count=1,
-)
-
-
 class GeminiClient:
-    def __init__(self):
-        self.api_key = os.getenv("GEMINI_API_KEY")
+    def __init__(self, model_name: str = None):
+        self.api_key = GEMINI_API_KEY
         self.model = None
 
         if not self.api_key:
@@ -42,11 +20,18 @@ class GeminiClient:
             return
 
         genai.configure(api_key=self.api_key)
-        self._auto_select_model()
+        self._auto_select_model(model_name=model_name)
 
-    def _auto_select_model(self):
+    def _auto_select_model(self, model_name=None):
         """Auto-selects the best available Gemini model for this API key."""
         try:
+            if model_name:
+                logger.info("Selected specified Gemini model: %s", model_name)
+                self.model = genai.GenerativeModel(
+                    model_name,
+                    generation_config=JSON_GENERATION_CONFIG,
+                )
+
             available = [
                 m.name
                 for m in genai.list_models()
@@ -55,7 +40,7 @@ class GeminiClient:
             logger.info("Available Gemini models: %s", available)
 
             selected = next(
-                (m for m in _PREFERRED_MODELS if m in available),
+                (m for m in PREFERRED_MODELS if m in available),
                 available[0] if available else None,
             )
 
@@ -63,29 +48,76 @@ class GeminiClient:
                 raise ValueError("No generative models found for this API key.")
 
             logger.info("Auto-selected Gemini model: %s", selected)
+            # Audit/review model uses JSON_GENERATION_CONFIG (structured output)
             self.model = genai.GenerativeModel(
                 selected,
-                generation_config=_JSON_GENERATION_CONFIG,
+                generation_config=JSON_GENERATION_CONFIG,
+            )
+            # Patch model uses PATCH_GENERATION_CONFIG (plain text for code blocks)
+            self.patch_model = genai.GenerativeModel(
+                selected,
+                generation_config=PATCH_GENERATION_CONFIG,
+            )
+            # Review model uses near-zero temperature + JSON output
+            self.review_model = genai.GenerativeModel(
+                selected,
+                generation_config=REVIEW_GENERATION_CONFIG,
             )
 
         except Exception as e:
             logger.warning("Error listing models (%s). Falling back to gemini-pro.", e)
             self.model = genai.GenerativeModel(
                 "models/gemini-pro",
-                generation_config=_JSON_GENERATION_CONFIG,
+                generation_config=JSON_GENERATION_CONFIG,
             )
             
-    def analyze(self, prompt: str) -> str:
+    def analyze(self, prompt: str, session_id: str = None) -> str:
         """
         Sends a prompt to Gemini and returns the text response.
+        Used for audit and review calls — uses JSON_GENERATION_CONFIG.
         Retries up to 3 times with exponential backoff on 429 rate-limit errors.
         """
         if not self._ready():
             return "[]"
+        model_name = getattr(self.model, "model_name", "unknown")
+        return self._call_with_retry(
+            lambda: self.model.generate_content(prompt),
+            model_name=model_name,
+            session_id=session_id,
+        )
 
-        return self._call_with_retry(lambda: self.model.generate_content(prompt))
+    def analyze_patch(self, prompt: str, session_id: str = None) -> str:
+        """
+        Sends a prompt for patch generation — uses PATCH_GENERATION_CONFIG
+        (plain text, slightly higher temperature for creative fix patterns).
+        """
+        if not self._ready():
+            return ""
+        model = getattr(self, "patch_model", self.model)
+        model_name = getattr(model, "model_name", "unknown")
+        return self._call_with_retry(
+            lambda: model.generate_content(prompt),
+            fallback="",
+            model_name=model_name,
+            session_id=session_id,
+        )
 
-    def analyze_with_cache(self, prompt: str, cache_name: str) -> str:
+    def analyze_review(self, prompt: str, session_id: str = None) -> str:
+        """
+        Sends a prompt for patch review — uses REVIEW_GENERATION_CONFIG
+        (near-zero temperature + JSON output for consistent pass/fail decisions).
+        """
+        if not self._ready():
+            return "[]"
+        model = getattr(self, "review_model", self.model)
+        model_name = getattr(model, "model_name", "unknown")
+        return self._call_with_retry(
+            lambda: model.generate_content(prompt),
+            model_name=model_name,
+            session_id=session_id,
+        )
+
+    def analyze_with_cache(self, prompt: str, cache_name: str, session_id: str = None) -> str:
         """
         Uses an existing Gemini Context Cache to answer the prompt.
         Falls back to standard `analyze()` if the cache is unavailable.
@@ -97,23 +129,28 @@ class GeminiClient:
             cache = genai.caching.CachedContent.get(cache_name)
             cached_model = genai.GenerativeModel.from_cached_content(
                 cached_content=cache,
-                generation_config=_JSON_GENERATION_CONFIG,
+                generation_config=JSON_GENERATION_CONFIG,
             )
             logger.info("Querying cache: %s", cache_name)
-            return self._call_with_retry(lambda: cached_model.generate_content(prompt))
+            model_name = getattr(cached_model, "model_name", getattr(self.model, "model_name", "unknown"))
+            return self._call_with_retry(
+                lambda: cached_model.generate_content(prompt),
+                model_name=model_name,
+                session_id=session_id,
+            )
 
         except Exception as e:
             logger.warning(
                 "Cache %s unavailable (%s). Falling back to standard call.", cache_name, e
             )
-            return self.analyze(prompt)
+            return self.analyze(prompt, session_id=session_id)
 
-    def generate_content_with_cache(self, prompt: str, cache_name: str) -> str:
+    def generate_content_with_cache(self, prompt: str, cache_name: str, session_id: str = None) -> str:
         """
         Plain-text response variant of analyze_with_cache (used for chat).
         Returns the raw text instead of trying to parse JSON.
         """
-        return self.analyze_with_cache(prompt, cache_name)
+        return self.analyze_with_cache(prompt, cache_name, session_id=session_id)
 
     def get_model(self) -> ChatGoogleGenerativeAI:
         """
@@ -121,7 +158,7 @@ class GeminiClient:
         Used by create_react_agent() in the patcher subgraph.
         Selects the same preferred model as _auto_select_model().
         """
-        api_key = self.api_key or os.getenv("GEMINI_API_KEY", "")
+        api_key = GEMINI_API_KEY
         # Prefer gemini-2.5-flash as it's fast and supports tool-use well
         model_name = "gemini-2.5-flash"
         return ChatGoogleGenerativeAI(
@@ -130,20 +167,39 @@ class GeminiClient:
             temperature=0.1,
             convert_system_message_to_human=True,
         )
-
-    # ------------------------------------------------------------------
-    # PRIVATE HELPERS
-    # ------------------------------------------------------------------
-
-    def _call_with_retry(self, call_fn, fallback: str = "[]", max_retries: int = 3) -> str:
+    
+    def _call_with_retry(
+        self,
+        call_fn,
+        fallback: str = "[]",
+        max_retries: int = 3,
+        session_id: str = None,
+        model_name: str = None,
+    ) -> str:
         """
         Calls call_fn() and retries on 429 resource-exhausted errors.
         Waits: 15s → 30s → 60s between attempts.
+        Captures usage_metadata before _extract_text so billing is tracked
+        even when the response text is blocked/empty.
         """
         wait_times = [15, 30, 60]
         for attempt in range(max_retries + 1):
             try:
                 response = call_fn()
+
+                # Track usage before _extract_text; the latter can raise on blocked responses
+                try:
+                    from app.utils.cost_tracker import log_and_track_usage
+                    from app.databases.redis import get_redis
+                    log_and_track_usage(
+                        session_id=session_id,
+                        model_name=model_name or "unknown",
+                        usage_metadata=getattr(response, "usage_metadata", None),
+                        redis_client=get_redis() if session_id else None,
+                    )
+                except Exception as track_err:
+                    logger.warning("[COST] Tracking error (non-fatal): %s", track_err)
+
                 return self._extract_text(response)
             except Exception as e:
                 err_str = str(e)

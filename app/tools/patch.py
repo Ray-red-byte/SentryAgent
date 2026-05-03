@@ -10,11 +10,9 @@ import ast
 import os
 import subprocess
 from langchain_core.tools import tool
+from app.utils.logger import get_logger
 
-
-# ============================================================================
-# TOOL 1 — OWASP / Knowledge-Base Research
-# ============================================================================
+logger = get_logger(__name__)
 
 @tool
 def search_owasp_guidelines(query: str) -> str:
@@ -28,6 +26,7 @@ def search_owasp_guidelines(query: str) -> str:
 
     Returns a formatted string of the top matching knowledge entries.
     """
+    logger.debug("[TOOL] search_owasp_guidelines: %s", query[:80])
     try:
         from app.memory.knowledge_base import SecurityKnowledgeBase
         kb = SecurityKnowledgeBase()
@@ -37,12 +36,7 @@ def search_owasp_guidelines(query: str) -> str:
         return "\n\n".join(lessons)
     except Exception as e:
         return f"Knowledge base unavailable: {e}. Proceed with standard OWASP best practices."
-
-
-# ============================================================================
-# TOOL 2 — File Reader
-# ============================================================================
-
+    
 @tool
 def read_file(file_path: str) -> str:
     """
@@ -54,6 +48,7 @@ def read_file(file_path: str) -> str:
     Returns the file contents as a string, or an error message if the file
     cannot be found.
     """
+    logger.debug("[TOOL] read_file: %s", file_path)
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             return f.read()
@@ -61,11 +56,6 @@ def read_file(file_path: str) -> str:
         return f"ERROR: File not found: {file_path}"
     except OSError as e:
         return f"ERROR: Could not read {file_path}: {e}"
-
-
-# ============================================================================
-# TOOL 3 — Patch Writer
-# ============================================================================
 
 @tool
 def write_code_patch(file_path: str, patched_code: str) -> str:
@@ -77,6 +67,7 @@ def write_code_patch(file_path: str, patched_code: str) -> str:
 
     Returns a success or error message.
     """
+    logger.info("[TOOL] write_code_patch: %s (%d chars)", file_path, len(patched_code))
     try:
         # Ensure the parent directory exists
         os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
@@ -85,12 +76,7 @@ def write_code_patch(file_path: str, patched_code: str) -> str:
         return f"SUCCESS: Patch written to {file_path} ({len(patched_code)} chars)."
     except OSError as e:
         return f"ERROR: Could not write patch to {file_path}: {e}"
-
-
-# ============================================================================
-# TOOL 4 — Syntax Checker
-# ============================================================================
-
+    
 @tool
 def check_syntax(file_path: str) -> str:
     """
@@ -102,6 +88,7 @@ def check_syntax(file_path: str) -> str:
 
     Returns "SYNTAX OK" on success, or a description of the SyntaxError.
     """
+    logger.debug("[TOOL] check_syntax: %s", file_path)
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             source = f.read()
@@ -118,25 +105,21 @@ def check_syntax(file_path: str) -> str:
     except OSError as e:
         return f"ERROR: Could not read {file_path}: {e}"
 
-
-# ============================================================================
-# TOOL 5 — Security Scanner (bandit)
-# ============================================================================
-
 @tool
 def run_security_scanner(file_path: str) -> str:
     """
-    Runs the `bandit` static security analyser on the file at file_path to
-    verify that known vulnerabilities have been resolved in the patched code.
+    Runs a static security scan on the file to verify that known vulnerabilities
+    have been resolved in the patched code.
 
-    Call this LAST in the loop, after check_syntax passes. If bandit still
-    reports HIGH or MEDIUM severity issues related to the original vulnerability,
+    Tries bandit first (HIGH severity only). If bandit is not installed, falls
+    back to the built-in PythonParser hotspot detector so the tool is always
+    functional inside the container.
+
+    Call this LAST in the loop, after check_syntax passes. If findings remain,
     refine the patch and repeat the cycle.
-
-    Returns a summary of bandit findings or "NO ISSUES" if the file is clean.
-    If bandit is not installed, falls back to a short note so the agent can
-    continue gracefully.
     """
+    logger.info("[TOOL] run_security_scanner: %s", file_path)
+    # --- Primary: bandit ---
     try:
         result = subprocess.run(
             ["bandit", "-r", file_path, "-f", "text", "-ll"],  # -ll = only HIGH severity
@@ -147,19 +130,229 @@ def run_security_scanner(file_path: str) -> str:
         output = result.stdout.strip() or result.stderr.strip()
         if result.returncode == 0:
             return "SECURITY SCAN PASSED: No high-severity issues found by bandit."
-        # returncode 1 = issues found
-        # Truncate to avoid overwhelming the agent context
         return f"SECURITY SCAN FINDINGS (HIGH severity):\n{output[:2000]}"
-    except FileNotFoundError:
-        # bandit not installed in the container — degrade gracefully
-        return (
-            "bandit is not installed. Skipping automated security scan. "
-            "Ensure the patch addresses each reported vulnerability manually."
-        )
     except subprocess.TimeoutExpired:
         return "SECURITY SCAN TIMEOUT: bandit took too long. Proceed with manual review."
+    except FileNotFoundError:
+        pass  # bandit not installed — fall through to PythonParser
     except Exception as e:
         return f"SECURITY SCAN ERROR: {e}"
+
+    # --- Fallback: PythonParser hotspot detector ---
+    try:
+        from app.core.parser.python_parser import PythonParser
+        with open(file_path, "rb") as f:
+            code = f.read()
+        hotspots = PythonParser().find_security_hotspots(code)
+        if not hotspots:
+            return "SECURITY SCAN PASSED: No high-severity issues found."
+        lines = [
+            f"  Line {h['line']}: [{h['severity']}] {h['type']} — {h['snippet'][:80]}"
+            for h in hotspots
+        ]
+        return "SECURITY SCAN FINDINGS (remaining issues to fix):\n" + "\n".join(lines)
+    except Exception as e:
+        return f"SECURITY SCAN ERROR (fallback scanner): {e}"
+
+
+# ============================================================================
+# SURGICAL PATCHING TOOLS (Feature 1 — AST-Aware)
+# ============================================================================
+
+@tool
+def replace_function(file_path: str, function_name: str, new_code: str) -> str:
+    """
+    Replaces an entire top-level function in the file with new_code using
+    Tree-sitter AST to locate exact byte boundaries.
+
+    PREFER this tool over write_code_patch when the fix is limited to a single
+    function. It leaves the rest of the file completely untouched.
+
+    Args:
+        file_path: Absolute path to the Python file.
+        function_name: Name of the top-level function to replace.
+        new_code: The full replacement function source (including def line, decorators, etc.).
+
+    Returns a success or error message.
+    """
+    try:
+        logger.info("[TOOL] replace_function: %s in %s", function_name, file_path)
+        from app.core.parser.python_parser import PythonParser
+
+        with open(file_path, "rb") as f:
+            source = f.read()
+
+        parser = PythonParser()
+        byte_range = parser.find_function_range(source, function_name)
+        if byte_range is None:
+            return (
+                f"ERROR: Function '{function_name}' not found in {file_path}. "
+                "Use read_file to check the actual function names."
+            )
+
+        start, end = byte_range
+        patched = source[:start] + new_code.encode("utf-8") + source[end:]
+
+        with open(file_path, "wb") as f:
+            f.write(patched)
+
+        return (
+            f"SUCCESS: Replaced function '{function_name}' in {file_path} "
+            f"(bytes {start}–{end} → {len(new_code)} chars)."
+        )
+    except Exception as e:
+        return f"ERROR: replace_function failed: {e}"
+
+
+@tool
+def replace_class_method(
+    file_path: str, class_name: str, method_name: str, new_code: str
+) -> str:
+    """
+    Replaces a single method inside a class with new_code using Tree-sitter
+    AST to locate exact byte boundaries.
+
+    PREFER this tool when the vulnerability is inside one method of a class.
+    It leaves the rest of the class and file completely untouched.
+
+    Args:
+        file_path: Absolute path to the Python file.
+        class_name: Name of the class containing the method.
+        method_name: Name of the method to replace.
+        new_code: The full replacement method source (including def line,
+                  decorators, correct indentation).
+
+    Returns a success or error message.
+    """
+    try:
+        logger.info("[TOOL] replace_class_method: %s.%s in %s", class_name, method_name, file_path)
+        from app.core.parser.python_parser import PythonParser
+
+        with open(file_path, "rb") as f:
+            source = f.read()
+
+        parser = PythonParser()
+        byte_range = parser.find_method_range(source, class_name, method_name)
+        if byte_range is None:
+            return (
+                f"ERROR: Method '{class_name}.{method_name}' not found in {file_path}. "
+                "Use read_file to check the actual class/method names."
+            )
+
+        start, end = byte_range
+        patched = source[:start] + new_code.encode("utf-8") + source[end:]
+
+        with open(file_path, "wb") as f:
+            f.write(patched)
+
+        return (
+            f"SUCCESS: Replaced method '{class_name}.{method_name}' in {file_path} "
+            f"(bytes {start}–{end} → {len(new_code)} chars)."
+        )
+    except Exception as e:
+        return f"ERROR: replace_class_method failed: {e}"
+
+
+# ============================================================================
+# STRICT DIFF TOOL (Feature 2)
+# ============================================================================
+
+@tool
+def apply_diff(file_path: str, search_block: str, replace_block: str) -> str:
+    """
+    Exact search-and-replace: finds `search_block` verbatim in the file and
+    replaces it with `replace_block`.
+
+    Returns an error if the search_block is not found — this forces you to
+    re-read the file and match indentation / whitespace exactly.
+
+    Use this as a lightweight alternative to replace_function when the change
+    is smaller than a full function (e.g. fixing one line or one expression).
+
+    Args:
+        file_path: Absolute path to the file.
+        search_block: The exact text to find (must match verbatim including whitespace).
+        replace_block: The replacement text.
+
+    Returns a success or error message.
+    """
+    logger.info("[TOOL] apply_diff: %s", file_path)
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        if search_block not in content:
+            return (
+                "SEARCH BLOCK NOT FOUND — check indentation and whitespace. "
+                "Use read_file to see the exact current contents, then try again."
+            )
+
+        # Guard: ensure only one occurrence to prevent ambiguous edits
+        occurrences = content.count(search_block)
+        if occurrences > 1:
+            return (
+                f"AMBIGUOUS: search_block appears {occurrences} times in {file_path}. "
+                "Include more surrounding context to make the match unique."
+            )
+
+        patched = content.replace(search_block, replace_block, 1)
+
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(patched)
+
+        return (
+            f"SUCCESS: Replaced 1 occurrence in {file_path} "
+            f"({len(search_block)} chars → {len(replace_block)} chars)."
+        )
+    except Exception as e:
+        return f"ERROR: apply_diff failed: {e}"
+
+
+# ============================================================================
+# FUNCTIONAL TEST TOOL (Feature 3)
+# ============================================================================
+
+@tool
+def run_unit_tests(test_file_path: str = "") -> str:
+    """
+    Runs pytest to verify that the patched code does not break existing tests.
+
+    Call this AFTER check_syntax and run_security_scanner to confirm no
+    business-logic regressions were introduced by the patch.
+
+    Args:
+        test_file_path: (Optional) Absolute path to a specific test file.
+                        If empty, runs the entire tests/ directory.
+
+    Returns pass/fail status and truncated output.
+    """
+    logger.info("[TOOL] run_unit_tests: %s", test_file_path or "tests/")
+    try:
+        cmd = ["python", "-m", "pytest", "-x", "-q", "--tb=short"]
+        if test_file_path:
+            cmd.append(test_file_path)
+        else:
+            cmd.append("tests/")
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        status = "PASSED" if result.returncode == 0 else "FAILED"
+        output = (result.stdout + "\n" + result.stderr).strip()
+        # Truncate to avoid overwhelming the agent context window
+        return f"UNIT TESTS {status}:\n{output[:3000]}"
+    except FileNotFoundError:
+        return (
+            "pytest is not installed or tests/ directory not found. "
+            "Skipping unit tests. Ensure the patch is correct manually."
+        )
+    except subprocess.TimeoutExpired:
+        return "UNIT TESTS TIMEOUT: pytest took too long (>60s). Proceed with manual review."
+    except Exception as e:
+        return f"UNIT TESTS ERROR: {e}"
 
 
 # ============================================================================

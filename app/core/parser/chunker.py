@@ -2,6 +2,9 @@ import os
 from pathlib import Path
 from tree_sitter import Language, Parser
 from app.core.parser.python_parser import PythonParser
+from app.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 class CodeChunker(PythonParser):
     def __init__(self, root_dir: str):
@@ -99,7 +102,7 @@ class CodeChunker(PythonParser):
         Walks the directory and chunks all python files.
         """
         all_chunks = []
-        print(f"📦 Chunking codebase in: {self.root_dir}")
+        logger.info("Chunking codebase in: %s", self.root_dir)
         
         for file_path in self.root_dir.rglob("*.py"):
             # Skip noise
@@ -109,8 +112,8 @@ class CodeChunker(PythonParser):
             try:
                 file_chunks = self.chunk_file(file_path)
                 all_chunks.extend(file_chunks)
-                print(f"  - {file_path.name}: {len(file_chunks)} chunks")
+                logger.debug("  %s: %d chunk(s)", file_path.name, len(file_chunks))
             except Exception as e:
-                print(f"  ⚠️ Failed to chunk {file_path.name}: {e}")
+                logger.warning("Failed to chunk %s: %s", file_path.name, e)
                 
         return all_chunks

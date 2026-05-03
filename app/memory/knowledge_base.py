@@ -19,7 +19,8 @@ COLLECTION_NAME = "security_knowledge_base"
 
 class SecurityKnowledgeBase:
     def __init__(self):
-        host = os.getenv("CHROMA_HOST", "localhost")
+        from app.config.settings import CHROMA_HOST
+        host = CHROMA_HOST
         port = 8000 if host == "chromadb_server" else 8001
         try:
             self.client = chromadb.HttpClient(host=host, port=port)
@@ -128,3 +129,59 @@ class SecurityKnowledgeBase:
             logger.info("Knowledge base: memorised fix for '%s' in %s", vuln_type, file_path)
         except Exception as e:
             logger.warning("Failed to save lesson: %s", e)
+
+    def learn_rejection(
+        self,
+        file_path: str,
+        original_code: str,
+        rejected_patch: str,
+        feedback: str,
+        vulnerabilities: list = None,
+    ) -> None:
+        """
+        Saves a rejected patch as a negative example (anti-pattern) so the LLM
+        learns what NOT to do when it encounters a similar vulnerability in the future.
+        """
+        if self.collection is None:
+            return
+
+        vuln_types = ""
+        if vulnerabilities:
+            try:
+                vuln_types = ", ".join([
+                    v.get("type", "") if isinstance(v, dict) else getattr(v, "type", "")
+                    for v in vulnerabilities
+                ])
+            except Exception:
+                pass
+
+        doc_id = str(uuid.uuid4())
+        # Truncate code snippets to keep document size manageable
+        original_snippet = original_code[:500] if original_code else ""
+        rejected_snippet = rejected_patch[:500] if rejected_patch else ""
+
+        document_text = (
+            f"[ANTI-PATTERN — REJECTED PATCH] DO NOT repeat this approach.\n"
+            f"[FILE]: {file_path}\n"
+            f"[VULNERABILITY TYPES]: {vuln_types}\n"
+            f"[REJECTION REASON]: {feedback}\n"
+            f"[ORIGINAL CODE SNIPPET]:\n{original_snippet}\n"
+            f"[REJECTED PATCH SNIPPET]:\n{rejected_snippet}"
+        )
+
+        try:
+            self.collection.add(
+                ids=[doc_id],
+                documents=[document_text],
+                metadatas=[{
+                    "type": "rejected_patch",
+                    "severity": "UNKNOWN",
+                    "file": file_path,
+                    "feedback": feedback[:200],
+                    "timestamp": datetime.datetime.utcnow().isoformat(),
+                    "source": "rejection",
+                }],
+            )
+            logger.info("Knowledge base: saved rejection anti-pattern for %s", file_path)
+        except Exception as e:
+            logger.warning("Failed to save rejection: %s", e)
