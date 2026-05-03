@@ -1,4 +1,6 @@
 # app/core/utils.py
+import hashlib
+import json
 import os
 from fastapi import HTTPException, Security, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -46,3 +48,18 @@ async def get_current_user(
             detail="Invalid authentication token.",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+
+def fix_cache_key(session_id: str, file_path: str, vulnerabilities) -> str:
+    """
+    Build a stable Redis cache key for a generated patch.
+    Includes a short hash of the vulnerability list so different vuln sets
+    for the same file get independent cache entries.
+    """
+    try:
+        vuln_hash = hashlib.sha1(
+            json.dumps(vulnerabilities, sort_keys=True, default=str).encode()
+        ).hexdigest()[:8]
+    except Exception:
+        vuln_hash = "0"
+    return f"fix_result:{session_id}:{file_path}:{vuln_hash}"

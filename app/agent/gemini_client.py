@@ -145,12 +145,12 @@ class GeminiClient:
             )
             return self.analyze(prompt, session_id=session_id)
 
-    def generate_content_with_cache(self, prompt: str, cache_name: str) -> str:
+    def generate_content_with_cache(self, prompt: str, cache_name: str, session_id: str = None) -> str:
         """
         Plain-text response variant of analyze_with_cache (used for chat).
         Returns the raw text instead of trying to parse JSON.
         """
-        return self.analyze_with_cache(prompt, cache_name)
+        return self.analyze_with_cache(prompt, cache_name, session_id=session_id)
 
     def get_model(self) -> ChatGoogleGenerativeAI:
         """
@@ -198,7 +198,7 @@ class GeminiClient:
                         redis_client=get_redis() if session_id else None,
                     )
                 except Exception as track_err:
-                    logger.debug("[COST] Tracking error (non-fatal): %s", track_err)
+                    logger.warning("[COST] Tracking error (non-fatal): %s", track_err)
 
                 return self._extract_text(response)
             except Exception as e:

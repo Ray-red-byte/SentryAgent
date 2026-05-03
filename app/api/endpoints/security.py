@@ -2,8 +2,11 @@ import os
 import json
 import logging
 from fastapi import APIRouter, HTTPException, Depends
+from sqlalchemy.orm import Session
 from app.databases.redis import get_redis
+from app.databases.postgres import get_db
 from app.memory.cache_manager import GeminiCacheManager
+from app.utils.cost_tracker import sync_cost_to_db
 from app.workflows.graph import (
     run_full_scan,
     run_file_audit,
@@ -32,6 +35,7 @@ workspace_manager = WorkspaceManager()
 async def scan_codebase(
     request: ScanRequest,
     redis_client=Depends(get_redis),
+    db: Session = Depends(get_db),
 ):
     """
     Scan the uploaded codebase using LangGraph workflow. Requires authentication.
@@ -66,6 +70,7 @@ async def scan_codebase(
             config=config,
         )
 
+        sync_cost_to_db(request.session_id, db, redis_client)
         return {
             "status": "complete",
             "session_id": request.session_id,
@@ -81,6 +86,7 @@ async def scan_codebase(
 async def audit_code(
     request: AuditRequest,
     redis_client=Depends(get_redis),
+    db: Session = Depends(get_db),
 ):
     """Audit a single file using LangGraph workflow."""
     try:
@@ -137,6 +143,7 @@ async def audit_code(
         if redis_client:
             redis_client.setex(audit_key, 3600, json.dumps(report))
 
+        sync_cost_to_db(request.session_id, db, redis_client)
         label = request.bundle_name if is_bundle else request.file_path
         return {"file": label, "report": report}
 
@@ -149,6 +156,7 @@ async def audit_code(
 async def fix_code(
     request: FixRequest,
     redis_client=Depends(get_redis),
+    db: Session = Depends(get_db),
 ):
     """
     Generate security fixes using LangGraph workflow.
@@ -210,6 +218,7 @@ async def fix_code(
         if redis_client:
             redis_client.setex(fix_key, 3600, fixed_content)
 
+        sync_cost_to_db(request.session_id, db, redis_client)
         return {"file": request.file_path, "fixed_code": fixed_content}
 
     except HTTPException:
@@ -221,6 +230,7 @@ async def fix_code(
 async def reject_fix(
     request: FixRejectRequest,
     redis_client=Depends(get_redis),
+    db: Session = Depends(get_db),
 ):
     """
     User rejects a previously generated patch and provides feedback.
@@ -280,6 +290,7 @@ async def reject_fix(
         if redis_client:
             redis_client.setex(fix_key, 3600, fixed_content)
 
+        sync_cost_to_db(request.session_id, db, redis_client)
         return {"file": request.file_path, "fixed_code": fixed_content}
 
     except HTTPException:

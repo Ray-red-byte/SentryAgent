@@ -78,11 +78,45 @@ def log_and_track_usage(
     Safe to call even if usage_metadata is None.
     """
     if usage_metadata is None:
+        logger.warning("[COST] usage_metadata is None for model=%s session=%s — SDK did not return token counts", model_name, session_id)
         return
     prompt_tokens    = getattr(usage_metadata, "prompt_token_count", 0) or 0
     candidate_tokens = getattr(usage_metadata, "candidates_token_count", 0) or 0
     cached_tokens    = getattr(usage_metadata, "cached_content_token_count", 0) or 0
     _record(session_id, model_name, prompt_tokens, candidate_tokens, cached_tokens, redis_client)
+
+
+# ── Postgres sync ──────────────────────────────────────────────────────────
+
+def sync_cost_to_db(session_id: str, db, redis_client) -> None:
+    """
+    Read the accumulated cost from Redis and persist it to the AuditSession row
+    in Postgres. Creates the row if it doesn't exist yet.
+    Safe to call even when Redis or the DB is unavailable.
+    """
+    if not redis_client:
+        return
+    try:
+        raw = redis_client.get(f"cost:{session_id}")
+        if raw is None:
+            return
+        total_cost = float(raw)
+    except Exception as exc:
+        logger.warning("[COST] Redis read failed for session %s: %s", session_id, exc)
+        return
+
+    try:
+        from app.models.audit_log import AuditSession
+        session_row = db.query(AuditSession).filter(AuditSession.id == session_id).first()
+        if session_row:
+            session_row.total_cost = total_cost
+        else:
+            db.add(AuditSession(id=session_id, total_cost=total_cost))
+        db.commit()
+        logger.info("[COST] Synced $%.6f to DB for session %s", total_cost, session_id)
+    except Exception as exc:
+        db.rollback()
+        logger.warning("[COST] DB sync failed for session %s: %s", session_id, exc)
 
 
 # ── LangChain callback ──────────────────────────────────────────────────────

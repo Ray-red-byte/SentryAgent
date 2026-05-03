@@ -11,7 +11,7 @@ from app.databases.redis import get_redis
 from app.core.workspace import WorkspaceManager
 from app.core.report_generator import ReportGenerator
 from app.utils.auth import get_current_user
-from app.models.audit_log import AuditLog
+from app.models.audit_log import AuditLog, AuditSession
 from app.models.schemas import ExportRequest, ApplyFixRequest
 from app.memory.knowledge_base import SecurityKnowledgeBase
 from app.utils.error import safe_http_error
@@ -23,6 +23,7 @@ workspace_manager = WorkspaceManager()
 @router.post("/upload", dependencies=[Depends(get_current_user)])
 async def upload_codebase(
     file: UploadFile = File(...),
+    db: Session = Depends(get_db),
 ):
     """Upload and cache a codebase for scanning. Requires authentication."""
     if not file.filename.endswith(".zip"):
@@ -30,6 +31,14 @@ async def upload_codebase(
 
     session_id = workspace_manager.create_workspace()
     await workspace_manager.save_and_extract_code(session_id, file)
+
+    try:
+        db.add(AuditSession(id=session_id))
+        db.commit()
+        logger.info("AuditSession created in DB for session %s", session_id)
+    except Exception as e:
+        db.rollback()
+        logger.warning("Could not create AuditSession for %s: %s", session_id, e)
 
     return {"session_id": session_id, "message": "Uploaded successfully."}
 

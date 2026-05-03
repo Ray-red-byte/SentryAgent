@@ -178,7 +178,7 @@ def generate_patch(state: PatchState) -> PatchState:
         )
         result = graph.invoke(
             {"messages": [("user", initial_message)]},
-            config={"recursion_limit": 5, "callbacks": [cost_cb]},
+            config={"recursion_limit": 20, "callbacks": [cost_cb]},
         )
 
         # ──────────────────────────────────────────────────────────────────
