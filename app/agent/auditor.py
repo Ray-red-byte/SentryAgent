@@ -188,7 +188,7 @@ class SecurityAuditor:
             with open(full_path, "r", encoding="utf-8") as f:
                 code = f.read()
             final_prompt = f"{prompt}\n\n=== FILE CONTENT ===\n{code}"
-            return self.llm.analyze(final_prompt, session_id=self.session_id)
+            return self.llm.analyze_lite(final_prompt, session_id=self.session_id)
         except OSError as e:
             logger.error("Could not read %s: %s", full_path, e)
             return "Error: Could not read the file for analysis."

@@ -6,7 +6,10 @@ import google.generativeai as genai
 from langchain_google_genai import ChatGoogleGenerativeAI
 from app.config.settings import GEMINI_API_KEY
 
-from app.config.gemini import CACHE_MODEL, PREFERRED_MODELS, JSON_GENERATION_CONFIG, PATCH_GENERATION_CONFIG, REVIEW_GENERATION_CONFIG
+from app.config.gemini import (
+    CACHE_MODEL, PREFERRED_MODELS, PREFERRED_LITE_MODELS,
+    JSON_GENERATION_CONFIG, PATCH_GENERATION_CONFIG, REVIEW_GENERATION_CONFIG,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +50,13 @@ class GeminiClient:
             if not selected:
                 raise ValueError("No generative models found for this API key.")
 
-            logger.info("Auto-selected Gemini model: %s", selected)
+            # Lite model selection (falls back to main model if none available)
+            lite_selected = next(
+                (m for m in PREFERRED_LITE_MODELS if m in available),
+                selected,
+            )
+            logger.info("Auto-selected Gemini model: %s  lite: %s", selected, lite_selected)
+
             # Audit/review model uses JSON_GENERATION_CONFIG (structured output)
             self.model = genai.GenerativeModel(
                 selected,
@@ -62,6 +71,16 @@ class GeminiClient:
             self.review_model = genai.GenerativeModel(
                 selected,
                 generation_config=REVIEW_GENERATION_CONFIG,
+            )
+            # Lite review model — cheaper, same JSON config (for patch review)
+            self.lite_review_model = genai.GenerativeModel(
+                lite_selected,
+                generation_config=REVIEW_GENERATION_CONFIG,
+            )
+            # Lite model — cheaper, JSON config (for chat slow-path)
+            self.lite_model = genai.GenerativeModel(
+                lite_selected,
+                generation_config=JSON_GENERATION_CONFIG,
             )
 
         except Exception as e:
@@ -110,6 +129,37 @@ class GeminiClient:
         if not self._ready():
             return "[]"
         model = getattr(self, "review_model", self.model)
+        model_name = getattr(model, "model_name", "unknown")
+        return self._call_with_retry(
+            lambda: model.generate_content(prompt),
+            model_name=model_name,
+            session_id=session_id,
+        )
+
+    def analyze_review_lite(self, prompt: str, session_id: str = None) -> str:
+        """
+        Lite-model variant of analyze_review — uses gemini-2.0-flash-lite for
+        patch review to reduce billing on the review step.
+        Falls back to the standard review model if lite model is unavailable.
+        """
+        if not self._ready():
+            return "[]"
+        model = getattr(self, "lite_review_model", self.review_model)
+        model_name = getattr(model, "model_name", "unknown")
+        return self._call_with_retry(
+            lambda: model.generate_content(prompt),
+            model_name=model_name,
+            session_id=session_id,
+        )
+
+    def analyze_lite(self, prompt: str, session_id: str = None) -> str:
+        """
+        Lite-model variant of analyze — used for non-cached chat slow-path
+        to reduce per-token cost on conversational queries.
+        """
+        if not self._ready():
+            return "[]"
+        model = getattr(self, "lite_model", self.model)
         model_name = getattr(model, "model_name", "unknown")
         return self._call_with_retry(
             lambda: model.generate_content(prompt),

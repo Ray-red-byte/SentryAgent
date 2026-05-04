@@ -26,5 +26,10 @@ def get_logger(name: str) -> logging.Logger:
         handler.setFormatter(formatter)
         root.addHandler(handler)
         root.setLevel(logging.DEBUG)
+        logging.getLogger("chromadb.config").setLevel(logging.WARNING)
+
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("chromadb.utils.embedding_functions").setLevel(logging.WARNING)
 
     return logging.getLogger(name)
