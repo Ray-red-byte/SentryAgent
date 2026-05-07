@@ -1,7 +1,7 @@
 import os
 import json
 import logging
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends
 from sqlalchemy.orm import Session
 from app.databases.redis import get_redis
 from app.databases.postgres import get_db
@@ -30,6 +30,16 @@ from app.agent.translator import SecurityTranslator
 logger = logging.getLogger(__name__)
 router = APIRouter()
 workspace_manager = WorkspaceManager()
+
+
+def _delete_gemini_cache(cache_name: str, session_id: str) -> None:
+    """Background task: destroy Gemini Context Cache after fix completes."""
+    from app.databases.redis import get_redis
+    try:
+        cache_mgr = GeminiCacheManager()
+        cache_mgr.delete_cache(cache_name, redis_client=get_redis())
+    except Exception as e:
+        logger.warning("Cache deletion failed for session %s: %s", session_id, e)
 
 @router.post("/scan", dependencies=[Depends(get_current_user)])
 async def scan_codebase(
@@ -114,11 +124,9 @@ async def audit_code(
             try:
                 cache_mgr = GeminiCacheManager()
                 cache_name = cache_mgr.create_cache_for_session(
-                    request.session_id, str(session_path)
+                    request.session_id, str(session_path), redis_client=redis_client
                 )
-                if redis_client:
-                    redis_client.setex(f"cache:{request.session_id}", 3600, cache_name)
-                    logger.info("Lazy cache created for bundle audit, session %s", request.session_id)
+                logger.info("Lazy cache created for bundle audit, session %s", request.session_id)
             except Exception as e:
                 logger.warning("Lazy cache creation failed for session %s: %s", request.session_id, e)
 
@@ -155,6 +163,7 @@ async def audit_code(
 @router.post("/fix", dependencies=[Depends(get_current_user)])
 async def fix_code(
     request: FixRequest,
+    background_tasks: BackgroundTasks,
     redis_client=Depends(get_redis),
     db: Session = Depends(get_db),
 ):
@@ -196,11 +205,9 @@ async def fix_code(
             try:
                 cache_mgr = GeminiCacheManager()
                 cache_name = cache_mgr.create_cache_for_session(
-                    request.session_id, str(session_path)
+                    request.session_id, str(session_path), redis_client=redis_client
                 )
-                if redis_client:
-                    redis_client.setex(f"cache:{request.session_id}", 3600, cache_name)
-                    logger.info("Lazy cache created for bundle fix, session %s", request.session_id)
+                logger.info("Lazy cache created for bundle fix, session %s", request.session_id)
             except Exception as e:
                 logger.warning("Lazy cache creation failed for session %s: %s", request.session_id, e)
 
@@ -219,6 +226,13 @@ async def fix_code(
             redis_client.setex(fix_key, 3600, fixed_content)
 
         sync_cost_to_db(request.session_id, db, redis_client)
+
+        # Cache no longer needed after fix — delete it to stop idle billing
+        if cache_name:
+            if redis_client:
+                redis_client.delete(f"cache:{request.session_id}")
+            background_tasks.add_task(_delete_gemini_cache, cache_name, request.session_id)
+
         return {"file": request.file_path, "fixed_code": fixed_content}
 
     except HTTPException:
@@ -229,6 +243,7 @@ async def fix_code(
 @router.post("/fix/reject", dependencies=[Depends(get_current_user)])
 async def reject_fix(
     request: FixRejectRequest,
+    background_tasks: BackgroundTasks,
     redis_client=Depends(get_redis),
     db: Session = Depends(get_db),
 ):
@@ -262,11 +277,9 @@ async def reject_fix(
             try:
                 cache_mgr = GeminiCacheManager()
                 cache_name = cache_mgr.create_cache_for_session(
-                    request.session_id, str(session_path)
+                    request.session_id, str(session_path), redis_client=redis_client
                 )
-                if redis_client:
-                    redis_client.setex(f"cache:{request.session_id}", 3600, cache_name)
-                    logger.info("Lazy cache created for bundle re-fix, session %s", request.session_id)
+                logger.info("Lazy cache created for bundle re-fix, session %s", request.session_id)
             except Exception as e:
                 logger.warning("Lazy cache creation failed for session %s: %s", request.session_id, e)
 
@@ -291,6 +304,13 @@ async def reject_fix(
             redis_client.setex(fix_key, 3600, fixed_content)
 
         sync_cost_to_db(request.session_id, db, redis_client)
+
+        # Cache no longer needed after fix — delete it to stop idle billing
+        if cache_name:
+            if redis_client:
+                redis_client.delete(f"cache:{request.session_id}")
+            background_tasks.add_task(_delete_gemini_cache, cache_name, request.session_id)
+
         return {"file": request.file_path, "fixed_code": fixed_content}
 
     except HTTPException:

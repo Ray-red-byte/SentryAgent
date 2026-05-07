@@ -3,6 +3,15 @@ import google.generativeai as genai
 # The models the cache manager creates caches for — must match here exactly.
 CACHE_MODEL = "models/gemini-2.5-flash"
 
+# Lite model for low-cost tasks (review, chat slow-path)
+LITE_MODEL = "models/gemini-2.0-flash-lite"
+PREFERRED_LITE_MODELS = [
+    "models/gemini-2.0-flash-lite",
+    "models/gemini-2.0-flash",
+    "models/gemini-1.5-flash-latest",
+    "models/gemini-1.5-flash",
+]
+
 # Preferred model order for non-cached calls
 PREFERRED_MODELS = [
     "models/gemini-2.5-flash",

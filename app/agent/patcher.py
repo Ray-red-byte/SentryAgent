@@ -121,7 +121,7 @@ class SecurityPatcher:
             patched_code=patched_code,
         )
 
-        response_text = self.llm.analyze_review(prompt, session_id=self.session_id)
+        response_text = self.llm.analyze_review_lite(prompt, session_id=self.session_id)
 
         try:
             # Strip markdown fences if present

@@ -3,6 +3,8 @@ import api, { tokenStore, logout } from './api';
 import LoginPage from './components/LoginPage';
 import FileUpload from './components/FileUpload';
 import AuditWorkspace from './components/AuditWorkspace';
+import LiveCostTracker from './components/cost/LiveCostTracker';
+import SessionCostSummary from './components/cost/SessionCostSummary';
 import { useTaskContext } from './context/TaskContext';
 import {
   ShieldCheck, AlertTriangle, FileText,
@@ -239,6 +241,14 @@ function App() {
             {appStatus}
           </div>
 
+          {/* Live cost odometer — visible once a session exists */}
+          {sessionId && (
+            <LiveCostTracker
+              sessionId={sessionId}
+              isActive={Object.keys(activeTasks).length > 0}
+            />
+          )}
+
           {/* Export PDF (only when scan is done) */}
           {sessionId && scanResults && (
             <button
@@ -419,6 +429,10 @@ function App() {
                 ))}
 
               </div>
+
+              {/* Cost summary card — shown after scan completes */}
+              <SessionCostSummary sessionId={sessionId} />
+
             </div>
 
             {/* Audit workspace */}

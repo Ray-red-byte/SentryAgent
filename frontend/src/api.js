@@ -1,10 +1,15 @@
 import axios from 'axios';
 
 // ---------------------------------------------------------------------------
+// Base URL — single source of truth for both Axios and SSE fetch calls
+// ---------------------------------------------------------------------------
+export const API_BASE_URL = 'http://localhost:8000/v2';
+
+// ---------------------------------------------------------------------------
 // Axios Instance
 // ---------------------------------------------------------------------------
 const api = axios.create({
-    baseURL: 'http://localhost:8000/v2',
+    baseURL: API_BASE_URL,
     headers: { 'Content-Type': 'application/json' },
 });
 
@@ -64,5 +69,13 @@ api.interceptors.response.use(
         return Promise.reject(error);
     }
 );
+
+// ---------------------------------------------------------------------------
+// Cost tracking
+// ---------------------------------------------------------------------------
+export async function fetchSessionCost(sessionId) {
+    const res = await api.get(`/status/cost/${sessionId}`);
+    return res.data; // { session_id, cost_usd, source }
+}
 
 export default api;

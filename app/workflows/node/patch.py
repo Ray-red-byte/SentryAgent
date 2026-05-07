@@ -167,6 +167,7 @@ def generate_patch(state: PatchState) -> PatchState:
     )
 
     try:
+        from langgraph.errors import GraphRecursionError
         graph = _get_patcher_graph()
         _t0 = time.monotonic()
         from app.utils.cost_tracker import CostTrackingCallback
@@ -178,7 +179,7 @@ def generate_patch(state: PatchState) -> PatchState:
         )
         result = graph.invoke(
             {"messages": [("user", initial_message)]},
-            config={"recursion_limit": 20, "callbacks": [cost_cb]},
+            config={"recursion_limit": 8, "callbacks": [cost_cb]},
         )
 
         # ──────────────────────────────────────────────────────────────────
@@ -225,6 +226,23 @@ def generate_patch(state: PatchState) -> PatchState:
             "current_stage": "patching",
         }
 
+    except GraphRecursionError:
+        logger.warning(
+            "[PATCH] Recursion limit reached for %s — returning original code.",
+            file_path,
+        )
+        try:
+            with open(full_path, "w", encoding="utf-8") as f:
+                f.write(original_code)
+        except OSError:
+            pass
+        return {
+            **state,
+            "original_code": original_code,
+            "patched_code": original_code,
+            "current_stage": "error",
+            "error": "Recursion limit reached — patch generation aborted.",
+        }
     except Exception as e:
         logger.error(
             "[PATCH] ERROR  file=%s  elapsed=%.1fs  error=%s",
@@ -239,7 +257,7 @@ def generate_patch(state: PatchState) -> PatchState:
         return {
             **state,
             "original_code": original_code,
-            "patched_code": original_code,  # safe fallback — return unchanged code
+            "patched_code": original_code,
             "current_stage": "error",
             "error": str(e),
         }
